@@ -28,10 +28,17 @@ let currentController = null; // 用于中止请求
 let pageContext = null; // 当前页面抓取结果
 
 // ---------- 多轮会话状态 ----------
-let sessionId = null; // 当前会话 id（内存存储，关闭侧边栏即重置）
+let sessionId = null; // 当前会话 id
 let injectedUrl = null; // 已把哪个页面的全文注入过会话（避免每轮重复塞全文）
 let lastPageUrl = null; // 上一次抓取到的页面 url（用于检测换页）
 let lastQuestion = null; // 最近一次用户提问（用于「重新生成」）
+
+// ---------- 按标签页隔离的会话持久化 ----------
+// 对话绑定到打开它的标签页：切走切回不丢，关闭标签页即清空。
+// 存储用 chrome.storage.session（浏览器关闭自动清空）。
+let currentTabId = null; // 侧边栏当前展示的是哪个标签页的对话
+const CONV_PREFIX = 'conv_'; // 存储 key 前缀 + tabId
+let restoring = false; // 恢复对话期间，抑制自动抓取/开新会话副作用
 
 // ---------- 设置读取 ----------
 async function loadSettings() {
@@ -253,16 +260,6 @@ async function capturePdf(tab) {
       data.length +
       ' 字' +
       (data.truncated ? '（已截断）' : '');
-
-    // 换文档则开新会话（同网页逻辑）
-    if (
-      els.useContext.checked &&
-      lastPageUrl &&
-      data.url !== lastPageUrl &&
-      sessionId
-    ) {
-      startNewConversation();
-    }
     lastPageUrl = data.url;
     return data;
   } catch (e) {
@@ -305,19 +302,7 @@ async function capturePage() {
     setPageTitle(label, 'live');
     els.pageTitle.title =
       data.url + '\n正文约 ' + data.length + ' 字' + (data.truncated ? '（已截断）' : '');
-
-    // 决策 B：换到不同网页 → 若正处于某个会话中，自动开启新会话
-    if (
-      els.useContext.checked &&
-      lastPageUrl &&
-      data.url &&
-      data.url !== lastPageUrl &&
-      sessionId
-    ) {
-      startNewConversation();
-    }
     lastPageUrl = data.url || lastPageUrl;
-
     return data;
   } catch (e) {
     let msg = e.message || String(e);
@@ -461,6 +446,8 @@ async function ask(question) {
     els.input.focus();
     // 为已完成的助手回答添加操作条（复制 / 重新生成）
     maybeAddAnswerActions(answerEl);
+    // 持久化当前标签页的对话
+    saveConversation();
   }
 }
 
@@ -700,7 +687,9 @@ function startNewConversation() {
   els.messages.innerHTML = '';
   sessionId = null;
   injectedUrl = null;
+  lastQuestion = null;
   showEmptyHint();
+  saveConversation(); // 同步清空该标签页的持久化对话
 }
 
 els.settingsBtn.addEventListener('click', () => {
@@ -815,15 +804,25 @@ els.useContext.addEventListener('change', () => {
   }
 });
 
-// 切换标签页时自动重新抓取（若开启上下文）
-chrome.tabs.onActivated.addListener(() => {
-  if (els.useContext.checked) capturePage();
+// 切换标签页：保存旧标签页对话、恢复新标签页对话（含页面抓取）
+chrome.tabs.onActivated.addListener((info) => {
+  switchToTab(info.tabId);
 });
-// 页面导航完成后也刷新
+// 同一标签页内导航完成后，仅刷新页面抓取（不开新会话，对话保留）
 chrome.tabs.onUpdated.addListener((tabId, info, tab) => {
-  if (info.status === 'complete' && tab.active && els.useContext.checked) {
+  if (
+    info.status === 'complete' &&
+    tab.active &&
+    tabId === currentTabId &&
+    els.useContext.checked &&
+    !currentController
+  ) {
     capturePage();
   }
+});
+// 标签页关闭：清除它的对话（实现「关页卡即清空」）
+chrome.tabs.onRemoved.addListener((tabId) => {
+  chrome.storage.session.remove(CONV_PREFIX + tabId).catch(() => {});
 });
 
 // ---------- 右键「解释选中内容」处理 ----------
@@ -859,10 +858,102 @@ async function consumePendingAction() {
   }
 }
 
+// ---------- 按标签页隔离的对话持久化 ----------
+
+/** 把当前 DOM 里的对话序列化成可存储结构 */
+function serializeConversation() {
+  const msgs = [];
+  els.messages.querySelectorAll('.msg').forEach((wrap) => {
+    const body = wrap.querySelector('.body');
+    if (!body) return;
+    let role = 'assistant';
+    if (wrap.classList.contains('user')) role = 'user';
+    else if (wrap.classList.contains('error')) role = 'error';
+    // 助手消息存原始 markdown，其它存纯文本
+    const text =
+      role === 'assistant' ? body.dataset.raw || '' : body.textContent || '';
+    msgs.push({ role, text });
+  });
+  return { msgs, sessionId, injectedUrl, lastQuestion, lastPageUrl };
+}
+
+/** 把结构化对话渲染回 DOM */
+function renderConversation(state) {
+  els.messages.innerHTML = '';
+  const msgs = (state && state.msgs) || [];
+  if (msgs.length === 0) {
+    showEmptyHint();
+  } else {
+    for (const m of msgs) {
+      const body = addMessage(m.role, m.text);
+      // 为已完成的助手回答补上操作条
+      if (m.role === 'assistant' && (m.text || '').trim()) {
+        maybeAddAnswerActions(body);
+      }
+    }
+  }
+  sessionId = (state && state.sessionId) || null;
+  injectedUrl = (state && state.injectedUrl) || null;
+  lastQuestion = (state && state.lastQuestion) || null;
+  lastPageUrl = (state && state.lastPageUrl) || null;
+}
+
+/** 保存当前标签页的对话 */
+async function saveConversation() {
+  if (currentTabId == null) return;
+  try {
+    await chrome.storage.session.set({
+      [CONV_PREFIX + currentTabId]: serializeConversation(),
+    });
+  } catch (e) {
+    /* storage.session 不可用时忽略 */
+  }
+}
+
+/** 读取某标签页的对话（无则返回 null） */
+async function loadConversation(tabId) {
+  try {
+    const key = CONV_PREFIX + tabId;
+    const got = await chrome.storage.session.get(key);
+    return got[key] || null;
+  } catch (e) {
+    return null;
+  }
+}
+
+/**
+ * 切换到某个标签页：先存旧标签页的对话，再恢复新标签页的对话。
+ * 正在生成时不切换，避免打断流式输出。
+ */
+async function switchToTab(tabId) {
+  if (tabId == null || tabId === currentTabId) return;
+  if (currentController) return; // 生成中，暂不切换
+  // 保存当前标签页
+  await saveConversation();
+  currentTabId = tabId;
+  // 恢复目标标签页
+  restoring = true;
+  const state = await loadConversation(tabId);
+  renderConversation(state);
+  restoring = false;
+  // 抓取新标签页的页面内容（供上下文使用）
+  if (els.useContext.checked) capturePage();
+}
+
 // ---------- 初始化 ----------
 (async function init() {
   await loadSettings();
-  showEmptyHint();
+  // 绑定到当前激活标签页，并恢复它的对话
+  const tab = await getActiveTab();
+  currentTabId = tab ? tab.id : null;
+  const saved = currentTabId != null ? await loadConversation(currentTabId) : null;
+  if (saved && saved.msgs && saved.msgs.length) {
+    restoring = true;
+    renderConversation(saved);
+    restoring = false;
+  } else {
+    showEmptyHint();
+  }
   checkHealth();
   await capturePage();
   consumePendingAction(); // 若侧边栏由右键菜单打开，这里会接到选中文字

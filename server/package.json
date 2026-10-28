@@ -8,7 +8,8 @@
     "kiro-qa-server": "server.js"
   },
   "scripts": {
-    "start": "node server.js"
+    "start": "./start.sh",
+    "start:plain": "node server.js"
   },
   "engines": {
     "node": ">=18"

@@ -26,10 +26,18 @@ kiro-cli chat --output-format stream-json
 
 ```bash
 cd server
-node server.js
+./start.sh          # 推荐：后台运行，进程名显示为 kiro-qa-server，方便在活动监视器里定位
+./stop.sh           # 停止后台服务
+# 或： npm start                 # 同 ./start.sh（后台）
+# 或： FOREGROUND=1 ./start.sh   # 前台运行（调试用）
+# 或： node server.js            # 前台，进程名显示为 node
 ```
 
-看到 `Kiro 问答后端已启动: http://127.0.0.1:8787` 即成功。
+看到 `后端已在后台启动。PID …` 即成功；启动后可用 `curl http://127.0.0.1:8787/health` 验证。
+
+> - `./start.sh` 以**后台**方式运行，脱离终端常驻；日志写入 `server.log`，进程号写入 `server.pid`。重复执行不会重复启动。
+> - 进程名会被设为 `kiro-qa-server`，在 Mac「活动监视器」/ `ps` / `top` 里一眼可辨。可用环境变量 `PROC_NAME` 自定义。
+> - 停止用 `./stop.sh`。
 
 可用环境变量：
 
@@ -38,11 +46,12 @@ node server.js
 | `PORT`       | 监听端口                          | `8787`         |
 | `KIRO_BIN`   | kiro-cli 可执行文件路径            | `kiro-cli`     |
 | `ALLOW_ORIGIN` | CORS 允许来源                   | `*`            |
+| `PROC_NAME`  | 进程名（活动监视器显示）            | `kiro-qa-server` |
 
 示例：
 
 ```bash
-PORT=9000 KIRO_BIN=/Users/shinelon/.local/bin/kiro-cli node server.js
+PORT=9000 KIRO_BIN=/Users/shinelon/.local/bin/kiro-cli ./start.sh
 ```
 
 接口：
@@ -71,9 +80,9 @@ PORT=9000 KIRO_BIN=/Users/shinelon/.local/bin/kiro-cli node server.js
 
 - 回答支持**连续追问**：同一会话内，Kiro 记得之前聊过的内容（基于 `kiro-cli --resume-id`）。
 - **页面全文只在该会话首次涉及某页面时注入一次**，之后的追问不再重复塞全文（省 token、避免撑爆上下文）。
-- **切换到不同网页时自动开启新会话**（因为上下文变了）。
-- 点右上角清空按钮可**手动开启新会话**（清空对话并丢弃记忆）。
-- 会话 id 存在插件内存里：**关闭侧边栏即重置**；重启后端不影响记忆。
+- 同一标签页内导航到其它网址时**对话保留**（不自动清空）；需要重来时点右上角清空按钮**手动开启新会话**。
+- 会话内容**按标签页隔离并持久化**：每个标签页有自己独立的对话，切走切回**不丢失**；关闭该标签页时对话自动清空（存于 `chrome.storage.session`，浏览器关闭也会清空）。
+- 侧边栏**按标签页控制显示**：新标签页默认不显示；只有在某个标签页**手动点击扩展图标**（或用右键菜单「解释选中内容」）才在该标签页打开。切回曾经打开过的标签页会自动显示它的对话，切到没打开过的标签页则不显示。
 
 ### 长页面分块处理
 

@@ -11,6 +11,10 @@
 
 'use strict';
 
+// 设置进程名，方便在 Mac 活动监视器 / ps / top 里一眼定位到本服务。
+// 默认 "kiro-qa-server"，可用环境变量 PROC_NAME 覆盖。
+process.title = process.env.PROC_NAME || 'kiro-qa-server';
+
 const http = require('http');
 const { spawn } = require('child_process');
 const readline = require('readline');
