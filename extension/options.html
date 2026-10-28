@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Kiro 问答 · 设置</title>
+    <style>
+      *,
+      *::before,
+      *::after {
+        box-sizing: border-box;
+      }
+      :root {
+        --bg: #f8f9fa;
+        --bg-sunken: #f1f3f4;
+        --panel: #ffffff;
+        --border: #dadce0;
+        --border-soft: #e8eaed;
+        --text: #202124;
+        --text-dim: #5f6368;
+        --text-faint: #6b7075;
+        --accent: #1a73e8;
+        --accent-hover: #1765cc;
+        --ok: #188038;
+      }
+      html,
+      body {
+        margin: 0;
+        min-height: 100%;
+      }
+      body {
+        font-family: "Google Sans", "SF Pro Text", -apple-system,
+          BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei",
+          sans-serif;
+        background: var(--bg);
+        color: var(--text);
+        margin: 0;
+        padding: 40px 24px;
+        -webkit-font-smoothing: antialiased;
+      }
+      ::selection {
+        background: rgba(26, 115, 232, 0.18);
+        color: var(--text);
+      }
+      .card {
+        max-width: 480px;
+        margin: 0 auto;
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 14px;
+        padding: 24px 26px 26px;
+        box-shadow: 0 1px 2px rgba(60, 64, 67, 0.15),
+          0 1px 3px rgba(60, 64, 67, 0.1);
+      }
+      .head {
+        display: flex;
+        align-items: center;
+        gap: 9px;
+        margin-bottom: 20px;
+        padding-bottom: 16px;
+        border-bottom: 1px solid var(--border-soft);
+      }
+      .mark {
+        width: 24px;
+        height: 24px;
+        color: var(--accent);
+        flex-shrink: 0;
+      }
+      .mark svg {
+        width: 100%;
+        height: 100%;
+        display: block;
+      }
+      h1 {
+        font-size: 16px;
+        font-weight: 650;
+        letter-spacing: -0.01em;
+        margin: 0;
+      }
+      .head .sub {
+        font-size: 12px;
+        color: var(--text-dim);
+        margin-left: auto;
+      }
+      label {
+        display: block;
+        font-size: 12px;
+        font-weight: 600;
+        letter-spacing: 0.02em;
+        color: var(--text-dim);
+        margin: 18px 0 6px;
+      }
+      input {
+        width: 100%;
+        background: #ffffff;
+        color: var(--text);
+        border: 1px solid var(--border);
+        border-radius: 9px;
+        padding: 9px 12px;
+        font-family: inherit;
+        font-size: 14px;
+        outline: none;
+        caret-color: var(--accent);
+        transition: border-color 0.15s ease, box-shadow 0.15s ease;
+      }
+      input::placeholder {
+        color: var(--text-faint);
+      }
+      input:focus {
+        border-color: var(--accent);
+        box-shadow: 0 0 0 3px rgba(26, 115, 232, 0.12);
+      }
+      .hint {
+        font-size: 12px;
+        color: var(--text-faint);
+        margin-top: 5px;
+        line-height: 1.5;
+      }
+      .row {
+        margin-top: 26px;
+        display: flex;
+        gap: 12px;
+        align-items: center;
+      }
+      button {
+        background: var(--accent);
+        color: #ffffff;
+        border: none;
+        border-radius: 9px;
+        padding: 9px 20px;
+        font-family: inherit;
+        font-size: 14px;
+        font-weight: 600;
+        cursor: pointer;
+        transition: background 0.15s ease, transform 0.08s ease;
+      }
+      button:hover {
+        background: var(--accent-hover);
+      }
+      button:active {
+        transform: translateY(1px);
+      }
+      #saved {
+        color: var(--ok);
+        font-size: 13px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="card">
+      <div class="head">
+        <span class="mark" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path
+              d="M5 3.5v17M5 12l8.5-8.5M5 12l9 8.5"
+              stroke="currentColor"
+              stroke-width="2.2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            />
+          </svg>
+        </span>
+        <h1>Kiro 问答设置</h1>
+        <span class="sub">页面问答</span>
+      </div>
+      <label for="endpoint">后端地址</label>
+      <input id="endpoint" type="text" placeholder="http://127.0.0.1:8787" />
+      <div class="hint">本地 Node 后端的地址，默认 http://127.0.0.1:8787</div>
+
+      <label for="model">模型（可选）</label>
+      <input id="model" type="text" placeholder="留空使用默认" />
+      <div class="hint">对应 kiro-cli 的 --model 参数</div>
+
+      <label for="agent">Agent（可选）</label>
+      <input id="agent" type="text" placeholder="留空使用默认" />
+      <div class="hint">对应 kiro-cli 的 --agent 参数</div>
+
+      <div class="row">
+        <button id="saveBtn">保存</button>
+        <span id="saved"></span>
+      </div>
+    </div>
+
+    <script src="options.js"></script>
+  </body>
+</html>

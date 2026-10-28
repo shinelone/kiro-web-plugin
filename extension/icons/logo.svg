@@ -1,0 +1,14 @@
+<svg width="128" height="128" viewBox="0 0 128 128" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <!-- 圆角方形白底，细中性边框，与 Google 浅色界面一致 -->
+  <rect x="4" y="4" width="120" height="120" rx="28" fill="#ffffff" />
+  <rect x="4.75" y="4.75" width="118.5" height="118.5" rx="27.25" stroke="#dadce0" stroke-width="1.5" />
+
+  <!-- K 字形：Google Blue 纯色，与 UI 品牌标识一致 -->
+  <path
+    d="M44 34v60M44 64l30-30M44 64l32 30"
+    stroke="#1a73e8"
+    stroke-width="11"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  />
+</svg>

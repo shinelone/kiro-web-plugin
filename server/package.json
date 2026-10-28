@@ -1,0 +1,16 @@
+{
+  "name": "kiro-web-plugin-server",
+  "version": "1.0.0",
+  "description": "本地后端：把 kiro-cli 的流式输出转成 SSE 供 Chrome 插件调用",
+  "private": true,
+  "type": "commonjs",
+  "bin": {
+    "kiro-qa-server": "server.js"
+  },
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

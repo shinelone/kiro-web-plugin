@@ -1,0 +1,39 @@
+{
+  "manifest_version": 3,
+  "name": "Kiro 页面问答",
+  "version": "1.0.0",
+  "description": "在浏览器侧边栏中调用本地 Kiro，对当前网页进行流式问答。",
+  "permissions": ["sidePanel", "storage", "activeTab", "scripting", "tabs", "contextMenus"],
+  "host_permissions": [
+    "http://127.0.0.1/*",
+    "http://localhost/*",
+    "http://*/*",
+    "https://*/*"
+  ],
+  "action": {
+    "default_title": "Kiro 页面问答",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "side_panel": {
+    "default_path": "sidepanel.html"
+  },
+  "options_page": "options.html",
+  "background": {
+    "service_worker": "background.js"
+  },
+  "web_accessible_resources": [
+    {
+      "resources": ["vendor/pdfjs/pdf.worker.min.mjs", "vendor/pdfjs/pdf.min.mjs"],
+      "matches": ["<all_urls>"]
+    }
+  ],
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}

@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Kiro 流式问答</title>
+    <link rel="stylesheet" href="sidepanel.css" />
+  </head>
+  <body>
+    <!-- 顶栏 -->
+    <header class="topbar">
+      <button class="status-chip" id="status" type="button" title="后端状态（点击重新检测）">
+        <span class="status-dot" aria-hidden="true"></span>
+        <span class="status-text" id="statusText">检测中</span>
+      </button>
+
+      <button class="icon-btn" id="settingsBtn" type="button" title="设置" aria-label="设置">
+        <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <circle cx="12" cy="12" r="3" stroke="currentColor" stroke-width="1.6" />
+          <path
+            d="M12 2.5l1.3 2.2 2.5-.5.4 2.5 2.3 1.1-1 2.3 1 2.3-2.3 1.1-.4 2.5-2.5-.5L12 21.5l-1.3-2.2-2.5.5-.4-2.5-2.3-1.1 1-2.3-1-2.3 2.3-1.1.4-2.5 2.5.5L12 2.5z"
+            stroke="currentColor"
+            stroke-width="1.6"
+            stroke-linejoin="round"
+          />
+        </svg>
+      </button>
+
+      <button class="icon-btn" id="clearBtn" type="button" title="开启新会话（清空对话与记忆）" aria-label="开启新会话">
+        <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <path
+            d="M4 7h16M9.5 7V5.5A1.5 1.5 0 0111 4h2a1.5 1.5 0 011.5 1.5V7M6 7l.8 11.2A2 2 0 008.8 20h6.4a2 2 0 002-1.8L18 7M10 11v5M14 11v5"
+            stroke="currentColor"
+            stroke-width="1.6"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          />
+        </svg>
+      </button>
+    </header>
+
+    <!-- 页面上下文栏 -->
+    <div class="pagebar" id="pagebar">
+      <label class="ctx-toggle" title="开启后，提问会带上当前页面内容">
+        <input type="checkbox" id="useContext" checked />
+        <span class="switch" aria-hidden="true"></span>
+        <span class="ctx-label">页面上下文</span>
+      </label>
+      <span class="page-divider" aria-hidden="true"></span>
+      <span class="page-title" id="pageTitle" title="">未获取页面</span>
+      <button
+        class="icon-btn icon-btn--sm"
+        id="previewBtn"
+        type="button"
+        title="预览发给 Kiro 的页面内容"
+        aria-label="预览页面内容"
+      >
+        <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <path
+            d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"
+            stroke="currentColor"
+            stroke-width="1.7"
+            stroke-linejoin="round"
+          />
+          <circle cx="12" cy="12" r="2.75" stroke="currentColor" stroke-width="1.7" />
+        </svg>
+      </button>
+      <button
+        class="icon-btn icon-btn--sm"
+        id="refreshPageBtn"
+        type="button"
+        title="重新抓取当前页面"
+        aria-label="重新抓取当前页面"
+      >
+        <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <path
+            d="M20 12a8 8 0 10-2.3 5.6M20 7v5h-5"
+            stroke="currentColor"
+            stroke-width="1.7"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          />
+        </svg>
+      </button>
+    </div>
+
+    <!-- 页面内容预览浮层 -->
+    <div class="modal-overlay hidden" id="previewModal">
+      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="previewTitle">
+        <div class="modal-head">
+          <span class="modal-title" id="previewTitle">发给 Kiro 的页面内容</span>
+          <button class="icon-btn icon-btn--sm" id="previewClose" type="button" title="关闭" aria-label="关闭">
+            <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path d="M6 6l12 12M18 6L6 18" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
+            </svg>
+          </button>
+        </div>
+        <div class="modal-meta" id="previewMeta"></div>
+        <div class="modal-body" id="previewBody"></div>
+      </div>
+    </div>
+
+    <!-- 快捷问题 -->
+    <div class="quick-actions" id="quickActions">
+      <button type="button" data-q="请用中文简明总结这个页面的主要内容，分点列出。">总结页面</button>
+      <button type="button" data-q="请把这个页面的核心要点提炼成不超过 5 条的清单。">提取要点</button>
+      <button type="button" data-q="请把这个页面的主要内容翻译成中文。">翻译</button>
+      <button type="button" data-q="这个页面里有哪些关键数据、数字或结论？请列出来。">关键数据</button>
+    </div>
+
+    <!-- 对话区 -->
+    <main class="messages" id="messages"></main>
+
+    <!-- 输入区 -->
+    <form class="composer" id="composer">
+      <div class="composer-field">
+        <textarea
+          id="input"
+          rows="1"
+          placeholder="向 Kiro 提问…  Enter 发送 · Shift+Enter 换行"
+        ></textarea>
+        <button type="submit" id="sendBtn" class="send-btn" title="发送" aria-label="发送">
+          <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path
+              d="M5 12l14-7-4.5 14.5-3-6-6.5-1.5z"
+              stroke="currentColor"
+              stroke-width="1.7"
+              stroke-linejoin="round"
+              fill="none"
+            />
+          </svg>
+        </button>
+        <button type="button" id="stopBtn" class="stop-btn hidden" title="停止" aria-label="停止生成">
+          <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <rect x="7" y="7" width="10" height="10" rx="2" fill="currentColor" />
+          </svg>
+        </button>
+      </div>
+    </form>
+
+    <script src="extract.js"></script>
+    <script src="markdown.js"></script>
+    <script type="module" src="pdf-extract.js"></script>
+    <script src="sidepanel.js"></script>
+  </body>
+</html>
