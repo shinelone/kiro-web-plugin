@@ -1,0 +1,13 @@
+# IDE
+.idea/
+*.iml
+
+# macOS
+.DS_Store
+
+# 运行产物
+server/server.log
+server/server.pid
+
+# Node
+node_modules/
