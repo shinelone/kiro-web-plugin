@@ -93,7 +93,7 @@ function showEmptyHint() {
       '<div class="eh-text">点上方快捷按钮，或直接输入问题，' +
       '回答会逐字流式返回。支持连续追问（有上下文记忆），' +
       '点右上角清空按钮可开启新会话。<br/>状态为「离线」时，请先在终端启动后端：' +
-      '<br/><code>node server/server.js</code></div>';
+      '<br/><code>cd server &amp;&amp; ./start.sh</code></div>';
     els.messages.appendChild(d);
   }
 }
