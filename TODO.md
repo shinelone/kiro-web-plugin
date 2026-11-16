@@ -13,7 +13,7 @@
 - [x] **Markdown 渲染**
   Kiro 回答常含代码块、列表、表格，现在是纯文本显示。接入轻量 Markdown 渲染 + 代码高亮 + 「复制代码」按钮。
 
-- [x] **长页面分块处理**
+- [x] **长页面分块处理**（已改为：正文转 Markdown，长页面存成文件由 Kiro 按需读取）
   现在正文截断到 12000 字，长文会丢信息。做分块 + 「基于全文归纳」的策略。
 
 ---
@@ -39,8 +39,11 @@
 
 ## 工程 / 安全
 
-- [ ] **收紧 CORS**
-  后端把 `ALLOW_ORIGIN` 从 `*` 改成具体的 `chrome-extension://<扩展id>`。
+- [x] **收紧 CORS**
+  后端按 Origin 拒绝普通网页的请求（返回 403），只接受浏览器扩展和本机无 Origin 的请求，并校验 Host 防 DNS rebinding。`ALLOW_ORIGIN` 可进一步限定到具体扩展 ID。
+
+- [x] **自定义 Agent**
+  设置页编辑 agent 的描述、模型、提示词、工具；问答时选择 agent。agent 文件放在 `server/workspace/.kiro/agents/`。
 
 - [ ] **并发与取消**
   同一时间限制一个请求；取消时确实杀掉后端子进程（已部分实现，可再加 token 校验）。
@@ -50,6 +53,10 @@
 
 - [ ] **后端随系统启动**
   用 launchd / pm2 等让本地后端常驻，省去每次手动 `node server.js`。
+  > 已部分解决：安装 Native Messaging 启动器后，插件会在后端离线时自动执行 `start.sh`。
+
+- [x] **模型切换**
+  侧边栏顶部下拉框切换模型，列表来自 `kiro-cli chat --list-models`。
 
 - [ ] **错误提示优化**
   后端离线、CLI 未登录时给出更明确的引导。

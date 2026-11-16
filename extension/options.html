@@ -42,7 +42,7 @@
         color: var(--text);
       }
       .card {
-        max-width: 480px;
+        max-width: 600px;
         margin: 0 auto;
         background: var(--panel);
         border: 1px solid var(--border);
@@ -143,6 +143,314 @@
         color: var(--ok);
         font-size: 13px;
       }
+      select {
+        flex: 1;
+        min-width: 0;
+        background: #ffffff;
+        color: var(--text);
+        border: 1px solid var(--border);
+        border-radius: 9px;
+        padding: 9px 10px;
+        font-family: inherit;
+        font-size: 14px;
+        outline: none;
+      }
+      select:focus {
+        border-color: var(--accent);
+        box-shadow: 0 0 0 3px rgba(26, 115, 232, 0.12);
+      }
+      .inline {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+      }
+      button.ghost {
+        background: #ffffff;
+        color: var(--accent);
+        border: 1px solid var(--border);
+        padding: 8px 14px;
+        font-weight: 500;
+        flex-shrink: 0;
+      }
+      button.ghost:hover {
+        background: rgba(26, 115, 232, 0.06);
+        border-color: rgba(26, 115, 232, 0.5);
+      }
+      button:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+      }
+      label.check {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-weight: 500;
+        font-size: 13px;
+        color: var(--text);
+        letter-spacing: 0;
+        margin-top: 20px;
+        cursor: pointer;
+      }
+      label.check input {
+        width: auto;
+        margin: 0;
+        accent-color: var(--accent);
+      }
+      .section {
+        margin-top: 26px;
+        padding-top: 18px;
+        border-top: 1px solid var(--border-soft);
+      }
+      .section-title {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 13px;
+        font-weight: 650;
+        margin-bottom: 6px;
+      }
+      .badge {
+        font-size: 11px;
+        font-weight: 500;
+        padding: 1px 8px;
+        border-radius: 999px;
+        border: 1px solid var(--border);
+        color: var(--text-dim);
+      }
+      .badge.ok {
+        color: var(--ok);
+        border-color: rgba(24, 128, 56, 0.4);
+      }
+      .badge.bad {
+        color: #d93025;
+        border-color: rgba(217, 48, 37, 0.4);
+      }
+      code {
+        font-family: "SF Mono", ui-monospace, Menlo, monospace;
+        font-size: 12px;
+      }
+      .cmd {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        margin: 8px 0 4px;
+        background: var(--bg-sunken);
+        border: 1px solid var(--border);
+        border-radius: 9px;
+        padding: 6px 6px 6px 12px;
+      }
+      .cmd code {
+        flex: 1;
+        min-width: 0;
+        word-break: break-all;
+        user-select: all;
+      }
+      .cmd button.ghost {
+        padding: 5px 12px;
+        font-size: 12px;
+      }
+      .section .row {
+        margin-top: 14px;
+        gap: 8px;
+      }
+      .output {
+        margin: 12px 0 0;
+        padding: 10px 12px;
+        background: var(--bg-sunken);
+        border: 1px solid var(--border);
+        border-radius: 9px;
+        font-family: "SF Mono", ui-monospace, Menlo, monospace;
+        font-size: 11.5px;
+        line-height: 1.5;
+        white-space: pre-wrap;
+        word-break: break-word;
+        max-height: 200px;
+        overflow: auto;
+        color: var(--text-dim);
+      }
+      .hidden {
+        display: none;
+      }
+      textarea {
+        width: 100%;
+        background: #ffffff;
+        color: var(--text);
+        border: 1px solid var(--border);
+        border-radius: 9px;
+        padding: 9px 12px;
+        font-family: inherit;
+        font-size: 13px;
+        line-height: 1.55;
+        outline: none;
+        resize: vertical;
+        min-height: 120px;
+      }
+      textarea:focus {
+        border-color: var(--accent);
+        box-shadow: 0 0 0 3px rgba(26, 115, 232, 0.12);
+      }
+      input:disabled {
+        background: var(--bg-sunken);
+        color: var(--text-dim);
+      }
+      .agent-list {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        margin-top: 12px;
+      }
+      .agent-item {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        width: 100%;
+        text-align: left;
+        background: #ffffff;
+        color: var(--text);
+        border: 1px solid var(--border);
+        border-radius: 9px;
+        padding: 8px 12px;
+        font-weight: 400;
+      }
+      button.agent-item:hover {
+        background: rgba(26, 115, 232, 0.05);
+        border-color: rgba(26, 115, 232, 0.5);
+      }
+      .agent-item.active {
+        border-color: var(--accent);
+        box-shadow: 0 0 0 2px rgba(26, 115, 232, 0.15);
+      }
+      .agent-item.readonly {
+        background: var(--bg-sunken);
+        cursor: default;
+      }
+      .agent-item .ai-main {
+        flex: 1;
+        min-width: 0;
+      }
+      .agent-item .ai-name {
+        font-size: 13px;
+        font-weight: 600;
+      }
+      .agent-item .ai-desc {
+        font-size: 12px;
+        color: var(--text-dim);
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .agent-item .ai-tags {
+        display: flex;
+        gap: 4px;
+        flex-shrink: 0;
+      }
+      .tag {
+        font-size: 10.5px;
+        padding: 1px 7px;
+        border-radius: 999px;
+        border: 1px solid var(--border);
+        color: var(--text-dim);
+        background: #ffffff;
+        white-space: nowrap;
+      }
+      .tag.risky {
+        color: #a56400;
+        border-color: rgba(242, 153, 0, 0.5);
+        background: #fef7e6;
+      }
+      .tag.err {
+        color: #d93025;
+        border-color: rgba(217, 48, 37, 0.4);
+      }
+      .agent-new {
+        align-self: flex-start;
+        margin-top: 4px;
+      }
+      .agent-form {
+        margin-top: 14px;
+        padding: 14px 16px 16px;
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        background: #fcfcfd;
+      }
+      .agent-form-head {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 13px;
+        font-weight: 650;
+      }
+      .agent-form label:first-of-type {
+        margin-top: 12px;
+      }
+      .tool-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 8px;
+      }
+      .tool-opt {
+        display: flex;
+        gap: 8px;
+        align-items: flex-start;
+        border: 1px solid var(--border);
+        border-radius: 9px;
+        padding: 8px 10px;
+        background: #ffffff;
+        cursor: pointer;
+        margin: 0;
+        font-weight: 400;
+        letter-spacing: 0;
+        color: var(--text);
+      }
+      .tool-opt input {
+        width: auto;
+        margin: 2px 0 0;
+        accent-color: var(--accent);
+      }
+      .tool-opt .to-label {
+        font-size: 13px;
+        font-weight: 600;
+      }
+      .tool-opt .to-desc {
+        font-size: 11.5px;
+        color: var(--text-dim);
+        line-height: 1.4;
+      }
+      .tool-opt.risky .to-label::after {
+        content: " · 高风险";
+        color: #a56400;
+        font-weight: 500;
+        font-size: 11px;
+      }
+      .tool-opt:has(input:checked) {
+        border-color: var(--accent);
+        background: rgba(26, 115, 232, 0.05);
+      }
+      .hint.warn {
+        color: #8a5300;
+        background: #fef7e6;
+        border: 1px solid rgba(242, 153, 0, 0.4);
+        border-radius: 8px;
+        padding: 7px 10px;
+        margin-top: 8px;
+      }
+      button.ghost.danger {
+        color: #d93025;
+        margin-left: auto;
+      }
+      button.ghost.danger:hover {
+        background: #fce8e6;
+        border-color: rgba(217, 48, 37, 0.5);
+      }
+      .form-msg {
+        font-size: 12.5px;
+      }
+      .form-msg.ok {
+        color: var(--ok);
+      }
+      .form-msg.err {
+        color: #d93025;
+      }
     </style>
   </head>
   <body>
@@ -166,20 +474,101 @@
       <input id="endpoint" type="text" placeholder="http://127.0.0.1:8787" />
       <div class="hint">本地 Node 后端的地址，默认 http://127.0.0.1:8787</div>
 
-      <label for="model">模型（可选）</label>
-      <input id="model" type="text" placeholder="留空使用默认" />
-      <div class="hint">对应 kiro-cli 的 --model 参数</div>
+      <label for="model">模型</label>
+      <div class="inline">
+        <select id="model">
+          <option value="">默认模型</option>
+        </select>
+        <button type="button" class="ghost" id="refreshModels" title="从后端重新拉取模型列表">刷新</button>
+      </div>
+      <div class="hint" id="modelHint">对应 kiro-cli 的 --model 参数，侧边栏输入框下方也可以随时切换</div>
 
-      <label for="agent">Agent（可选）</label>
-      <input id="agent" type="text" placeholder="留空使用默认" />
-      <div class="hint">对应 kiro-cli 的 --agent 参数</div>
+      <label for="agent">默认 Agent</label>
+      <select id="agent">
+        <option value="">默认 Agent</option>
+      </select>
+      <div class="hint">问答时使用的 agent，侧边栏输入框下方也可以切换。在下方「Agent 管理」里编辑</div>
+
+      <label class="check">
+        <input id="autoStart" type="checkbox" checked />
+        <span>后端离线时自动启动（需安装下方启动器）</span>
+      </label>
 
       <div class="row">
         <button id="saveBtn">保存</button>
         <span id="saved"></span>
       </div>
+
+      <div class="section" id="agentSection">
+        <div class="section-title">Agent 管理</div>
+        <div class="hint">
+          这里的 agent 保存在 <code>server/workspace/.kiro/agents/</code>，只供插件使用。全局和内置 agent 只能选用，不能在这里编辑。
+        </div>
+
+        <div class="agent-list" id="agentList"></div>
+        <div class="hint hidden" id="agentListErr"></div>
+
+        <form class="agent-form hidden" id="agentForm" autocomplete="off">
+          <div class="agent-form-head">
+            <span id="agentFormTitle">编辑 Agent</span>
+            <span class="badge" id="agentFormBadge"></span>
+          </div>
+
+          <label for="afName">名字</label>
+          <input id="afName" type="text" maxlength="40" placeholder="例如 web-reader" />
+          <div class="hint">小写字母、数字和 -，创建后不能改名</div>
+
+          <label for="afDesc">描述</label>
+          <input id="afDesc" type="text" maxlength="300" placeholder="一句话说明这个 agent 做什么" />
+
+          <label for="afModel">模型</label>
+          <select id="afModel">
+            <option value="">不指定（使用 kiro-cli 默认模型）</option>
+          </select>
+          <div class="hint">侧边栏里明确选了模型时，以侧边栏为准</div>
+
+          <label for="afPrompt">提示词</label>
+          <textarea id="afPrompt" rows="9" maxlength="20000" placeholder="这个 agent 的系统提示词"></textarea>
+
+          <label>工具</label>
+          <div class="tool-grid" id="afTools"></div>
+          <div class="hint warn hidden" id="afToolWarn">
+            已勾选写文件或执行命令。后端以 --trust-all-tools 运行，这些操作不会再询问确认，网页内容里的指令也可能诱导模型去执行。只在信任当前页面时使用。
+          </div>
+
+          <div class="row">
+            <button type="submit" id="afSave">保存 Agent</button>
+            <button type="button" class="ghost" id="afCancel">取消</button>
+            <button type="button" class="ghost danger" id="afDelete">删除</button>
+            <span class="form-msg" id="afMsg"></span>
+          </div>
+        </form>
+      </div>
+
+      <div class="section" id="nativeSection">
+        <div class="section-title">
+          本地启动器
+          <span class="badge" id="nativeBadge">检测中</span>
+        </div>
+        <div class="hint">
+          浏览器扩展无法直接执行本地命令。安装启动器（Native Messaging）后，插件可以自己执行
+          <code>server/start.sh</code> / <code>stop.sh</code>。在项目根目录运行一次：
+        </div>
+        <div class="cmd">
+          <code id="installCmd"></code>
+          <button type="button" class="ghost" id="copyCmd">复制</button>
+        </div>
+        <div class="hint">更换扩展目录导致扩展 ID 变化时，需要重新执行。</div>
+        <div class="row">
+          <button type="button" class="ghost" id="startSrv">启动后端</button>
+          <button type="button" class="ghost" id="stopSrv">停止后端</button>
+          <button type="button" class="ghost" id="restartSrv">重启</button>
+        </div>
+        <pre class="output hidden" id="nativeOut"></pre>
+      </div>
     </div>
 
+    <script src="native.js"></script>
     <script src="options.js"></script>
   </body>
 </html>

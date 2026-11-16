@@ -16,8 +16,11 @@
  * - 链接 [text](url)（仅 http/https/mailto）
  * - 无序列表 - / * / +，有序列表 1.
  * - 引用 >
- * - 表格 | a | b |
+ * - 表格 | a | b |（单元格里的 \| 是字面竖线）
  * - 分隔线 --- / *** / ___
+ * - 反斜杠转义 \* \_ \[ 等
+ * - 图片 ![alt](url) 只显示 alt 文字，不加载图片
+ * - 围栏也可以用 ~~~
  */
 
 (function (global) {
@@ -49,6 +52,18 @@
       return '\u0000CODE' + (codeSpans.length - 1) + '\u0000';
     });
 
+    // 反斜杠转义：先换成占位符，最后再还原成字面字符
+    const escapes = [];
+    s = s.replace(/\\([\\`*_[\]{}()#+\-.!|~>])/g, (_, ch) => {
+      escapes.push(ch);
+      return '\u0000ESC' + (escapes.length - 1) + '\u0000';
+    });
+
+    // 图片：只显示 alt 文字（侧边栏不加载外部图片）
+    s = s.replace(/!\[([^\]]*)\](?:\(([^)\s]*)(?:\s+"[^"]*")?\))?/g, (_, alt) =>
+      alt ? '<span class="md-img" title="图片">' + alt + '</span>' : ''
+    );
+
     // 链接 [text](url)
     s = s.replace(/\[([^\]]+)\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g, (_, txt, url) => {
       return (
@@ -75,6 +90,7 @@
     s = s.replace(/\u0000CODE(\d+)\u0000/g, (_, i) => {
       return '<code class="md-inline-code">' + codeSpans[+i] + '</code>';
     });
+    s = s.replace(/\u0000ESC(\d+)\u0000/g, (_, i) => escapes[+i]);
 
     return s;
   }
@@ -86,8 +102,9 @@
   function splitRow(line) {
     let l = line.trim();
     if (l.startsWith('|')) l = l.slice(1);
-    if (l.endsWith('|')) l = l.slice(0, -1);
-    return l.split('|').map((c) => c.trim());
+    if (l.endsWith('|') && !l.endsWith('\\|')) l = l.slice(0, -1);
+    // 按未转义的竖线切分，\| 还原成字面竖线
+    return l.split(/(?<!\\)\|/).map((c) => c.replace(/\\\|/g, '|').trim());
   }
 
   function render(src) {
@@ -109,15 +126,17 @@
       let line = lines[i];
 
       // 围栏代码块
-      const fence = line.match(/^\s*```+\s*([\w+-]*)\s*$/);
+      const fence = line.match(/^\s*(```+|~~~+)\s*([\w+#-]*)\s*$/);
       if (fence) {
         closeLists(0);
-        const lang = fence[1] || '';
+        const lang = fence[2] || '';
+        const fenceChar = fence[1][0] === '~' ? '~' : '`';
+        const closeRe = fenceChar === '~' ? /^\s*~~~+\s*$/ : /^\s*```+\s*$/;
         const codeLines = [];
         i++;
         let closed = false;
         while (i < lines.length) {
-          if (/^\s*```+\s*$/.test(lines[i])) {
+          if (closeRe.test(lines[i])) {
             closed = true;
             i++;
             break;
@@ -227,17 +246,23 @@
         const type = ol ? 'ol' : 'ul';
         if (listStack.length === 0 || listStack[listStack.length - 1].type !== type) {
           // 简化：不做多级嵌套缩进，按首个类型开列表
+          const startNum = ol ? parseInt(line.trim(), 10) : 1;
+          const olTag = startNum > 1 ? '<ol class="md-list" start="' + startNum + '">' : '<ol class="md-list">';
           if (listStack.length === 0) {
             listStack.push({ type });
-            out.push(type === 'ol' ? '<ol class="md-list">' : '<ul class="md-list">');
+            out.push(type === 'ol' ? olTag : '<ul class="md-list">');
           } else if (listStack[listStack.length - 1].type !== type) {
             closeLists(0);
             listStack.push({ type });
-            out.push(type === 'ol' ? '<ol class="md-list">' : '<ul class="md-list">');
+            out.push(type === 'ol' ? olTag : '<ul class="md-list">');
           }
         }
-        const content = (ul ? ul[2] : ol[2]).trim();
-        out.push('<li>' + renderInline(escapeHtml(content)) + '</li>');
+        const m = ul || ol;
+        const content = m[2].trim();
+        // 简化的嵌套：不真正嵌套列表，按缩进给列表项加左边距
+        const level = Math.min(Math.floor(m[1].replace(/\t/g, '  ').length / 2), 6);
+        const style = level ? ' style="margin-left:' + level * 1.2 + 'em"' : '';
+        out.push('<li' + style + '>' + renderInline(escapeHtml(content)) + '</li>');
         i++;
         continue;
       }
@@ -248,7 +273,7 @@
       while (
         i < lines.length &&
         !/^\s*$/.test(lines[i]) &&
-        !/^\s*```+/.test(lines[i]) &&
+        !/^\s*(```+|~~~+)/.test(lines[i]) &&
         !/^\s*#{1,6}\s/.test(lines[i]) &&
         !/^\s*>\s?/.test(lines[i]) &&
         !/^(\s*)[-*+]\s+/.test(lines[i]) &&

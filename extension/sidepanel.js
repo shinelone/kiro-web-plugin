@@ -21,9 +21,18 @@ const els = {
   previewMeta: document.getElementById('previewMeta'),
   previewBody: document.getElementById('previewBody'),
   quickActions: document.getElementById('quickActions'),
+  modelSelect: document.getElementById('modelSelect'),
+  agentSelect: document.getElementById('agentSelect'),
+  toolChips: document.getElementById('toolChips'),
+  expandBtn: document.getElementById('expandBtn'),
+  fullscreenBtn: document.getElementById('fullscreenBtn'),
+  fullSrc: document.getElementById('fullSrc'),
+  backendBar: document.getElementById('backendBar'),
+  backendMsg: document.getElementById('backendMsg'),
+  startBackendBtn: document.getElementById('startBackendBtn'),
 };
 
-let settings = { endpoint: DEFAULT_ENDPOINT, model: '', agent: '' };
+let settings = { endpoint: DEFAULT_ENDPOINT, model: '', agent: '', autoStart: true };
 let currentController = null; // 用于中止请求
 let pageContext = null; // 当前页面抓取结果
 
@@ -32,6 +41,7 @@ let sessionId = null; // 当前会话 id
 let injectedUrl = null; // 已把哪个页面的全文注入过会话（避免每轮重复塞全文）
 let lastPageUrl = null; // 上一次抓取到的页面 url（用于检测换页）
 let lastQuestion = null; // 最近一次用户提问（用于「重新生成」）
+let convAgent = ''; // 当前会话是用哪个 agent 开启的（换 agent 后不能续聊旧会话）
 
 // ---------- 按标签页隔离的会话持久化 ----------
 // 对话绑定到打开它的标签页：切走切回不丢，关闭标签页即清空。
@@ -40,37 +50,318 @@ let currentTabId = null; // 侧边栏当前展示的是哪个标签页的对话
 const CONV_PREFIX = 'conv_'; // 存储 key 前缀 + tabId
 let restoring = false; // 恢复对话期间，抑制自动抓取/开新会话副作用
 
+// ---------- 全屏模式 ----------
+// 同一个页面有两种打开方式：
+//   侧边栏：跟随当前激活的标签页切换对话；
+//   全屏页（sidepanel.html?mode=full&tabId=N）：在独立标签页中打开，始终绑定标签页 N，
+//   与侧边栏共用 conv_N 这份对话，两边互相同步。
+const PAGE_PARAMS = new URLSearchParams(location.search);
+const FULL_MODE = PAGE_PARAMS.get('mode') === 'full';
+const BOUND_TAB_ID = FULL_MODE ? Number(PAGE_PARAMS.get('tabId')) || null : null;
+let boundTabClosed = false; // 全屏页绑定的源标签页已关闭
+let lastSyncedConv = null; // 最近一次本页写入/读到的对话 JSON，用于忽略自己触发的同步事件
+
 // ---------- 设置读取 ----------
 async function loadSettings() {
   try {
-    const stored = await chrome.storage.sync.get(['endpoint', 'model', 'agent']);
+    const stored = await chrome.storage.sync.get(['endpoint', 'model', 'agent', 'autoStart']);
     settings.endpoint = (stored.endpoint || DEFAULT_ENDPOINT).replace(/\/$/, '');
     settings.model = stored.model || '';
     settings.agent = stored.agent || '';
+    settings.autoStart = stored.autoStart !== false; // 默认开启
   } catch {
     settings.endpoint = DEFAULT_ENDPOINT;
   }
 }
 
-// ---------- 健康检查 ----------
-async function checkHealth() {
-  els.status.className = 'status-chip';
-  els.statusText.textContent = '检测中';
-  els.status.title = '正在检测后端…';
+// ---------- 健康检查 + 自动启动后端 ----------
+let backendOnline = false;
+let startingBackend = null; // 正在进行的启动 Promise（防止重复启动）
+let lastAutoStartAt = 0; // 上次自动启动时间，避免反复拉起
+const AUTO_START_COOLDOWN = 30 * 1000;
+
+async function pingHealth() {
   try {
     const r = await fetch(settings.endpoint + '/health', { method: 'GET' });
-    if (r.ok) {
-      const j = await r.json();
-      els.status.className = 'status-chip ok';
-      els.statusText.textContent = '在线';
-      els.status.title = '后端在线: ' + (j.kiroBin || '') + '（点击重新检测）';
-    } else {
-      throw new Error('HTTP ' + r.status);
+    if (!r.ok) return null;
+    return await r.json();
+  } catch {
+    return null;
+  }
+}
+
+function setStatus(state, text, title) {
+  els.status.className = 'status-chip' + (state ? ' ' + state : '');
+  els.statusText.textContent = text;
+  els.status.title = title;
+}
+
+/** 显示/隐藏离线横幅。html 为可信的固定文案（含 <code>） */
+function setBackendBar(visible, html, opts = {}) {
+  els.backendBar.classList.toggle('hidden', !visible);
+  els.backendBar.classList.toggle('busy', !!opts.busy);
+  if (html != null) els.backendMsg.innerHTML = html;
+  els.startBackendBtn.classList.toggle('hidden', !!opts.hideBtn);
+  els.startBackendBtn.disabled = !!opts.busy;
+  els.startBackendBtn.textContent = opts.btnText || '启动后端';
+}
+
+/**
+ * 检查后端状态。
+ * allowAutoStart: 离线时是否按设置自动启动（默认 true）。
+ * 返回是否在线。
+ */
+async function checkHealth(allowAutoStart = true) {
+  if (startingBackend) return startingBackend;
+  setStatus('', '检测中', '正在检测后端…');
+  const j = await pingHealth();
+  if (j) {
+    backendOnline = true;
+    setStatus('ok', '在线', '后端在线: ' + (j.kiroBin || '') + '（点击重新检测）');
+    setBackendBar(false);
+    loadModels();
+    loadAgents();
+    return true;
+  }
+  backendOnline = false;
+  setStatus('bad', '离线', '后端离线 (' + settings.endpoint + ')，点击尝试启动');
+
+  const local = isLocalEndpoint(settings.endpoint);
+  if (
+    allowAutoStart &&
+    local &&
+    settings.autoStart &&
+    Date.now() - lastAutoStartAt > AUTO_START_COOLDOWN
+  ) {
+    lastAutoStartAt = Date.now();
+    return startBackend();
+  }
+  if (local) {
+    setBackendBar(true, '后端未运行（' + escapeText(settings.endpoint) + '）');
+  } else {
+    setBackendBar(
+      true,
+      '无法连接远程后端 ' + escapeText(settings.endpoint) + '，请在该机器上启动服务。',
+      { hideBtn: true }
+    );
+  }
+  return false;
+}
+
+/** 通过 Native Messaging 启动器执行 start.sh，并等待后端就绪 */
+function startBackend() {
+  if (startingBackend) return startingBackend;
+  startingBackend = (async () => {
+    setStatus('busy', '启动中', '正在启动本地后端…');
+    setBackendBar(true, '正在启动本地后端…', { busy: true, btnText: '启动中…' });
+
+    const resp = await callNativeHost('start', endpointPort(settings.endpoint));
+    if (!resp.ok) {
+      setStatus('bad', '离线', '后端离线，启动失败');
+      if (resp.needsReload) {
+        setBackendBar(
+          true,
+          '后端未运行。插件还没获得启动权限，请在 <code>chrome://extensions</code> 重新加载本插件。',
+          { btnText: '重试' }
+        );
+      } else if (resp.notInstalled) {
+        setBackendBar(
+          true,
+          '后端未运行。要让插件自动启动它，请先在项目目录执行一次：<br/><code>' +
+            escapeText(nativeInstallCommand()) +
+            '</code><br/>或手动执行 <code>cd server &amp;&amp; ./start.sh</code>',
+          { btnText: '重试' }
+        );
+      } else {
+        setBackendBar(
+          true,
+          '启动失败：' + escapeText(resp.error || resp.output || '未知错误') +
+            '<br/>详见 <code>server/server.log</code>',
+          { btnText: '重试' }
+        );
+      }
+      return false;
     }
-  } catch (e) {
-    els.status.className = 'status-chip bad';
-    els.statusText.textContent = '离线';
-    els.status.title = '后端离线，请先启动本地服务 (' + settings.endpoint + ')';
+
+    // start.sh 返回后，轮询 /health 直到就绪（最多约 10 秒）
+    for (let i = 0; i < 20; i++) {
+      const j = await pingHealth();
+      if (j) {
+        backendOnline = true;
+        setStatus('ok', '在线', '后端在线: ' + (j.kiroBin || '') + '（点击重新检测）');
+        setBackendBar(false);
+        loadModels();
+        loadAgents();
+        return true;
+      }
+      await new Promise((r) => setTimeout(r, 500));
+    }
+    setStatus('bad', '离线', '后端已启动但无响应');
+    setBackendBar(
+      true,
+      '后端进程已启动但未响应，请检查端口是否一致或查看 <code>server/server.log</code>',
+      { btnText: '重试' }
+    );
+    return false;
+  })();
+  startingBackend.finally(() => {
+    startingBackend = null;
+  });
+  return startingBackend;
+}
+
+/** 发送前确保后端可用：离线且为本机地址时尝试启动 */
+async function ensureBackend() {
+  if (backendOnline) return true;
+  if (await pingHealth()) return checkHealth(false);
+  if (!isLocalEndpoint(settings.endpoint) || !settings.autoStart) return false;
+  return startBackend();
+}
+
+// ---------- 模型 / Agent 列表 ----------
+let modelsLoaded = false;
+let agentsLoaded = false;
+let modelList = []; // [{ id, name, ... }]
+let defaultModel = null;
+let agentList = []; // [{ name, description, tools, model, source }]
+let toolDefs = []; // [{ id, label, risky }]
+
+function modelOptionLabel(m) {
+  let label = m.name || m.id;
+  if (typeof m.rate === 'number') label += '  ·  ' + m.rate + 'x';
+  return label;
+}
+
+function currentAgent() {
+  return agentList.find((a) => a.name === settings.agent) || null;
+}
+
+/** 从后端拉取模型列表并填充下拉框 */
+async function loadModels(force = false) {
+  if (!modelsLoaded || force) {
+    try {
+      const r = await fetch(settings.endpoint + '/models' + (force ? '?refresh=1' : ''));
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const data = await r.json();
+      modelList = (data.models || []).filter((m) => m.id);
+      defaultModel = data.defaultModel || null;
+      modelsLoaded = true;
+    } catch (e) {
+      // 旧版后端没有 /models，保留已有选项
+    }
+  }
+  syncModelSelect();
+}
+
+/** 从后端拉取 agent 列表 */
+async function loadAgents(force = false) {
+  if (!agentsLoaded || force) {
+    try {
+      const r = await fetch(settings.endpoint + '/agents' + (force ? '?refresh=1' : ''));
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const data = await r.json();
+      agentList = data.agents || [];
+      toolDefs = data.tools || [];
+      agentsLoaded = true;
+    } catch (e) {
+      // 旧版后端没有 /agents
+    }
+  }
+  syncAgentSelect();
+  syncModelSelect(); // 「跟随 Agent」的文案依赖当前 agent
+}
+
+/** 让下拉框显示当前设置的模型；设置里的模型不在列表时补一个选项 */
+function syncModelSelect() {
+  const sel = els.modelSelect;
+  const want = settings.model || '';
+  const agent = currentAgent();
+  sel.innerHTML = '';
+  const def = document.createElement('option');
+  def.value = '';
+  if (agent && agent.model) def.textContent = '跟随 Agent（' + agent.model + '）';
+  else def.textContent = '默认' + (defaultModel ? '（' + defaultModel + '）' : '模型');
+  sel.appendChild(def);
+  for (const m of modelList) {
+    const o = document.createElement('option');
+    o.value = m.id;
+    o.textContent = modelOptionLabel(m);
+    o.title = m.description || '';
+    sel.appendChild(o);
+  }
+  if (want && !modelList.some((m) => m.id === want)) {
+    const o = document.createElement('option');
+    o.value = want;
+    o.textContent = want;
+    sel.appendChild(o);
+  }
+  sel.value = want;
+  const opt = sel.options[sel.selectedIndex];
+  sel.parentElement.title =
+    '切换模型（对应 kiro-cli --model），下一次提问生效' + (opt && opt.title ? '\n' + opt.title : '');
+}
+
+/** 填充 agent 下拉框 */
+function syncAgentSelect() {
+  const sel = els.agentSelect;
+  const want = settings.agent || '';
+  sel.innerHTML = '';
+  const def = document.createElement('option');
+  def.value = '';
+  def.textContent = '默认 Agent';
+  sel.appendChild(def);
+
+  const groups = [
+    ['plugin', '插件 Agent'],
+    ['global', '全局 Agent'],
+    ['builtin', '内置 Agent'],
+  ];
+  for (const [src, label] of groups) {
+    const items = agentList.filter((a) => a.source === src);
+    if (!items.length) continue;
+    const g = document.createElement('optgroup');
+    g.label = label;
+    for (const a of items) {
+      const o = document.createElement('option');
+      o.value = a.name;
+      o.textContent = a.name;
+      o.title = a.description || '';
+      g.appendChild(o);
+    }
+    sel.appendChild(g);
+  }
+  if (want && !agentList.some((a) => a.name === want)) {
+    const o = document.createElement('option');
+    o.value = want;
+    o.textContent = want + (agentsLoaded ? '（已不存在）' : '');
+    sel.appendChild(o);
+  }
+  sel.value = want;
+  const agent = currentAgent();
+  sel.parentElement.title =
+    '切换 Agent（切换后开启新会话）' + (agent && agent.description ? '\n' + agent.description : '');
+  renderToolChips(agent);
+}
+
+/** 在输入框下方显示当前 agent 的工具（只有插件 agent 才知道具体工具） */
+function renderToolChips(agent) {
+  const box = els.toolChips;
+  box.innerHTML = '';
+  if (!agent || !Array.isArray(agent.tools)) return;
+  if (agent.tools.length === 0) {
+    const s = document.createElement('span');
+    s.className = 'tool-chip';
+    s.textContent = '无工具';
+    box.appendChild(s);
+    return;
+  }
+  for (const id of agent.tools) {
+    const def = toolDefs.find((t) => t.id === id);
+    const s = document.createElement('span');
+    s.className = 'tool-chip' + (def && def.risky ? ' risky' : '');
+    s.textContent = def ? def.label : id;
+    s.title = def ? def.description : '';
+    box.appendChild(s);
   }
 }
 
@@ -84,37 +375,61 @@ function showEmptyHint() {
   if (els.messages.children.length === 0) {
     const d = document.createElement('div');
     d.className = 'empty-hint';
+    // 和界面上的按钮用同一套图标，用户照着找得到
+    const ico = (d) =>
+      '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="' + d +
+      '" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+    const EYE = 'M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12zM12 9.25a2.75 2.75 0 110 5.5 2.75 2.75 0 010-5.5z';
+    const TRASH = 'M4 7h16M9.5 7V5.5A1.5 1.5 0 0111 4h2a1.5 1.5 0 011.5 1.5V7M6 7l.8 11.2A2 2 0 008.8 20h6.4a2 2 0 002-1.8L18 7';
+    const AGENT = 'M12 3l8 4.5v9L12 21l-8-4.5v-9L12 3zM4 7.5l8 4.5 8-4.5M12 12v9';
     d.innerHTML =
-      '<span class="eh-mark" aria-hidden="true">' +
-      '<svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">' +
-      '<path d="M5 3.5v17M5 12l8.5-8.5M5 12l9 8.5" stroke="currentColor" ' +
-      'stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg></span>' +
       '<div class="eh-title">针对当前网页提问</div>' +
-      '<div class="eh-text">点上方快捷按钮，或直接输入问题，' +
-      '回答会逐字流式返回。支持连续追问（有上下文记忆），' +
-      '点右上角清空按钮可开启新会话。<br/>状态为「离线」时，请先在终端启动后端：' +
-      '<br/><code>cd server &amp;&amp; ./start.sh</code></div>';
+      '<p class="eh-text">Kiro 会读取这个页面的内容来回答，同一会话里可以连续追问。</p>' +
+      '<ul class="eh-tips">' +
+      '<li>' + ico(EYE) + '<span>点顶栏的眼睛图标，查看发给 Kiro 的页面内容</span></li>' +
+      '<li>' + ico(TRASH) + '<span>点垃圾桶开启新会话，之前的对话不再带入</span></li>' +
+      '<li>' + ico(AGENT) + '<span>在输入框下方切换 Agent 和模型</span></li>' +
+      '</ul>';
     els.messages.appendChild(d);
   }
 }
 
-function addMessage(role, text = '') {
+function addMessage(role, text = '', steps = null, meta = null) {
   clearEmptyHint();
   const wrap = document.createElement('div');
   wrap.className = 'msg ' + role;
   const roleEl = document.createElement('div');
   roleEl.className = 'role';
-  roleEl.textContent = role === 'user' ? '你' : role === 'assistant' ? 'Kiro' : '错误';
+  const roleName = document.createElement('span');
+  roleName.textContent = role === 'user' ? '你' : role === 'assistant' ? 'Kiro' : '错误';
+  roleEl.appendChild(roleName);
   const body = document.createElement('div');
   body.className = 'body';
+  wrap.appendChild(roleEl);
   if (role === 'assistant') {
+    // 回答上方：思考过程 / 工具调用时间线 + 实时状态行
+    const stepsEl = document.createElement('div');
+    stepsEl.className = 'steps';
+    const liveEl = document.createElement('div');
+    liveEl.className = 'live-status hidden';
+    liveEl.innerHTML = '<span class="live-spin" aria-hidden="true"></span><span class="live-text"></span><span class="live-time"></span>';
+    const metaEl = document.createElement('span');
+    metaEl.className = 'role-meta';
+    roleEl.appendChild(metaEl);
+    wrap.appendChild(stepsEl);
+    wrap.appendChild(liveEl);
+    body._act = { stepsEl, liveEl, metaEl, steps: [], timer: null, startedAt: 0, answered: false, meta: meta || null };
+    if (steps && steps.length) {
+      for (const s of steps) renderStep(body, s, false);
+    }
+    if (meta) setRoleMeta(body, meta);
+
     body.classList.add('md'); // Markdown 渲染容器
     body.dataset.raw = text || ''; // 累积的原始 markdown
     if (text) body.innerHTML = renderMarkdown(text);
   } else {
     body.textContent = text; // 用户/错误消息保持纯文本
   }
-  wrap.appendChild(roleEl);
   wrap.appendChild(body);
   els.messages.appendChild(wrap);
   // 新增消息（发送/收到新气泡）时强制滚到底部并恢复跟随
@@ -122,11 +437,226 @@ function addMessage(role, text = '') {
   return body;
 }
 
-/** 向助手消息追加流式文本并重新渲染 Markdown */
+/**
+ * 向助手消息追加流式文本。
+ * 每个 chunk 都整段重渲染 Markdown 在长回答时会很卡，这里按帧合并：一帧最多渲染一次。
+ */
 function appendAssistantChunk(bodyEl, chunk) {
   bodyEl.dataset.raw = (bodyEl.dataset.raw || '') + chunk;
-  bodyEl.innerHTML = renderMarkdown(bodyEl.dataset.raw);
+  if (bodyEl._raf) return;
+  bodyEl._raf = requestAnimationFrame(() => {
+    bodyEl._raf = 0;
+    renderAnswerNow(bodyEl);
+  });
+}
+
+/** 立即渲染（流结束、停止时调用，确保最后一段不丢） */
+function flushAnswer(bodyEl) {
+  if (bodyEl._raf) {
+    cancelAnimationFrame(bodyEl._raf);
+    bodyEl._raf = 0;
+    renderAnswerNow(bodyEl);
+  }
+}
+
+function renderAnswerNow(bodyEl) {
+  bodyEl.innerHTML = renderMarkdown(bodyEl.dataset.raw || '');
   wireCopyButtons(bodyEl);
+  followScroll();
+}
+
+// ---------- 思考过程 / 工具调用 ----------
+const TOOL_STATUS_TEXT = {
+  pending: '等待中',
+  in_progress: '执行中',
+  completed: '完成',
+  failed: '失败',
+  cancelled: '已中断',
+};
+
+/** 开始一轮回答的实时状态（发出请求后立刻显示，避免界面空白） */
+function startLive(answerEl, text) {
+  const act = answerEl._act;
+  if (!act) return;
+  act.startedAt = act.startedAt || Date.now();
+  setLive(answerEl, text);
+  act.liveEl.classList.remove('hidden');
+  if (!act.timer) {
+    const tick = () => {
+      const s = (Date.now() - act.startedAt) / 1000;
+      act.liveEl.querySelector('.live-time').textContent = s < 60 ? s.toFixed(0) + 's' : Math.floor(s / 60) + 'm' + Math.floor(s % 60) + 's';
+    };
+    tick();
+    act.timer = setInterval(tick, 1000);
+  }
+}
+
+function setLive(answerEl, text) {
+  const act = answerEl._act;
+  if (!act) return;
+  act.liveEl.querySelector('.live-text').textContent = text;
+}
+
+/** 结束实时状态，在角色行写上用时和工具次数 */
+function stopLive(answerEl) {
+  const act = answerEl._act;
+  if (!act || act.stopped) return;
+  act.stopped = true;
+  if (act.timer) clearInterval(act.timer);
+  act.timer = null;
+  act.liveEl.classList.add('hidden');
+  if (act.startedAt) {
+    const tools = act.steps.filter((s) => s.type === 'tool').length;
+    act.meta = { elapsed: Date.now() - act.startedAt, tools };
+    setRoleMeta(answerEl, act.meta);
+  }
+  // 没收到结果的工具调用标记为已中断
+  for (const s of act.steps) {
+    if (s.type === 'tool' && (s.status === 'pending' || s.status === 'in_progress')) {
+      s.status = 'cancelled';
+      updateToolDom(s);
+    }
+  }
+}
+
+function setRoleMeta(answerEl, meta) {
+  const act = answerEl._act;
+  if (!act || !meta) return;
+  const parts = [];
+  if (meta.elapsed) parts.push('用时 ' + (meta.elapsed / 1000).toFixed(1) + 's');
+  if (meta.tools) parts.push(meta.tools + ' 次工具调用');
+  act.metaEl.textContent = parts.join(' · ');
+}
+
+/** 收到思考增量：接在最后一段思考后面，前面是工具调用时另起一段 */
+function appendThought(answerEl, text) {
+  const act = answerEl._act;
+  if (!act) return;
+  let last = act.steps[act.steps.length - 1];
+  if (!last || last.type !== 'thought') {
+    last = { type: 'thought', text: '' };
+    renderStep(answerEl, last, !act.answered);
+  }
+  last.text += text;
+  last._textNode.appendData(text);
+  last._meta.textContent = last.text.length + ' 字';
+  setLive(answerEl, '思考中');
+  followScroll();
+}
+
+/** 收到工具事件：同一个 id 合并更新 */
+function upsertTool(answerEl, ev) {
+  const act = answerEl._act;
+  if (!act) return;
+  let s = act.steps.find((x) => x.type === 'tool' && x.id === ev.id);
+  if (!s) {
+    s = { type: 'tool', id: ev.id, title: '', kind: '', summary: '', status: 'pending', input: '', output: '' };
+    // 开始调用工具后，之前的思考已经说完，收起来
+    collapseThoughts(act);
+    renderStep(answerEl, s, false);
+  }
+  for (const k of ['title', 'kind', 'summary', 'status', 'input', 'output']) {
+    if (ev[k] != null && ev[k] !== '') s[k] = ev[k];
+  }
+  updateToolDom(s);
+  const name = s.title || s.kind || '工具';
+  if (s.status === 'pending' || s.status === 'in_progress') setLive(answerEl, '正在调用 ' + name);
+  else setLive(answerEl, '思考中');
+  followScroll();
+}
+
+function collapseThoughts(act) {
+  for (const s of act.steps) if (s.type === 'thought' && s._el) s._el.open = false;
+}
+
+/** 正式回答开始输出：收起思考，状态行改为「正在回答」 */
+function markAnswering(answerEl) {
+  const act = answerEl._act;
+  if (!act || act.answered) return;
+  act.answered = true;
+  collapseThoughts(act);
+  setLive(answerEl, '正在回答');
+}
+
+/** 把一个步骤渲染到时间线里。open: 思考块是否默认展开 */
+function renderStep(answerEl, s, open) {
+  const act = answerEl._act;
+  const d = document.createElement('details');
+  d.className = 'step step-' + s.type;
+  const sum = document.createElement('summary');
+  const icon = document.createElement('span');
+  icon.className = 'step-icon';
+  icon.setAttribute('aria-hidden', 'true');
+  const title = document.createElement('span');
+  title.className = 'step-title';
+  const sub = document.createElement('span');
+  sub.className = 'step-sub';
+  const meta = document.createElement('span');
+  meta.className = 'step-meta';
+  sum.append(icon, title, sub, meta);
+  d.appendChild(sum);
+  const bodyEl = document.createElement('div');
+  bodyEl.className = 'step-body';
+  d.appendChild(bodyEl);
+
+  if (s.type === 'thought') {
+    title.textContent = '思考过程';
+    s._textNode = document.createTextNode(s.text || '');
+    bodyEl.appendChild(s._textNode);
+    s._meta = meta;
+    meta.textContent = s.text ? s.text.length + ' 字' : '';
+    d.open = !!open;
+  } else {
+    s._title = title;
+    s._sub = sub;
+    s._meta = meta;
+    s._body = bodyEl;
+  }
+  s._el = d;
+  act.steps.push(s);
+  act.stepsEl.appendChild(d);
+  if (s.type === 'tool') updateToolDom(s);
+}
+
+function updateToolDom(s) {
+  if (!s._el) return;
+  s._el.className = 'step step-tool tool-' + (s.status || 'pending');
+  s._title.textContent = s.title || s.kind || '工具调用';
+  s._sub.textContent = s.summary || '';
+  s._sub.title = s.summary || '';
+  s._meta.textContent = TOOL_STATUS_TEXT[s.status] || s.status || '';
+  // 展开内容：输入 / 输出
+  s._body.innerHTML = '';
+  if (s.input) {
+    const l = document.createElement('div');
+    l.className = 'step-label';
+    l.textContent = '输入';
+    const pre = document.createElement('pre');
+    pre.textContent = s.input;
+    s._body.append(l, pre);
+  }
+  if (s.output) {
+    const l = document.createElement('div');
+    l.className = 'step-label';
+    l.textContent = '输出';
+    const pre = document.createElement('pre');
+    pre.textContent = s.output;
+    s._body.append(l, pre);
+  }
+  if (!s.input && !s.output) {
+    s._body.textContent = '暂无详情';
+  }
+}
+
+/** 序列化时去掉 DOM 引用 */
+function stepsForStorage(answerEl) {
+  const act = answerEl._act;
+  if (!act) return [];
+  return act.steps.map((s) =>
+    s.type === 'thought'
+      ? { type: 'thought', text: s.text }
+      : { type: 'tool', id: s.id, title: s.title, kind: s.kind, summary: s.summary, status: s.status, input: s.input, output: s.output }
+  );
 }
 
 /** 为代码块的「复制」按钮绑定事件（幂等） */
@@ -193,6 +723,9 @@ function setBusy(busy) {
   els.sendBtn.classList.toggle('hidden', busy);
   els.stopBtn.classList.toggle('hidden', !busy);
   els.input.disabled = busy;
+  els.modelSelect.disabled = busy; // 生成中不允许切模型
+  els.agentSelect.disabled = busy;
+  els.expandBtn.disabled = busy; // 生成中不展开，避免两边同时续聊同一会话
   els.quickActions
     .querySelectorAll('button')
     .forEach((b) => (b.disabled = busy));
@@ -200,6 +733,15 @@ function setBusy(busy) {
 
 // ---------- 当前页面抓取 ----------
 async function getActiveTab() {
+  if (FULL_MODE) {
+    // 全屏页：始终针对打开它的源标签页，而不是全屏页自己
+    if (BOUND_TAB_ID == null || boundTabClosed) return null;
+    try {
+      return await chrome.tabs.get(BOUND_TAB_ID);
+    } catch {
+      return null;
+    }
+  }
   const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
   return tab || null;
 }
@@ -269,13 +811,23 @@ async function capturePdf(tab) {
   }
 }
 
-/** 抓取当前标签页内容；失败返回 null */
-async function capturePage() {
+/**
+ * 抓取当前标签页内容；失败返回 null。
+ * opts.full：飞书文档要自动滚动读完全文（耗时几秒到几十秒，期间页面会滚动）。
+ * 默认只读已渲染的部分，结果带 partial: true，发问题或打开预览前再用 full 补全（见 ensureFullPage）。
+ */
+async function capturePage(opts = {}) {
   pageContext = null;
-  setPageTitle('抓取中…', '');
+  setPageTitle(opts.full ? '正在滚动读取飞书文档全文…' : '抓取中…', '');
   els.pageTitle.title = '';
   try {
     const tab = await getActiveTab();
+    if (FULL_MODE && !tab) {
+      setPageTitle('源标签页已关闭，无法读取页面', 'err');
+      els.pageTitle.title = '全屏页绑定的标签页已关闭。对话仍可继续，但不会再带上页面内容。';
+      return null;
+    }
+    if (FULL_MODE) document.title = 'Kiro · ' + (tab.title || tab.url || '页面问答');
     if (!tab || isRestrictedUrl(tab.url)) {
       setPageTitle('当前页面无法读取', 'err');
       els.pageTitle.title = tab ? tab.url : '';
@@ -290,7 +842,7 @@ async function capturePage() {
     const results = await chrome.scripting.executeScript({
       target: { tabId: tab.id },
       func: extractPageContent, // 来自 extract.js
-      args: [200000], // 抓取全文（上限 20 万字），长页面交由分块逻辑处理
+      args: [200000, { scroll: !!opts.full }], // 抓取全文（上限 20 万字），长页面由后端存成文件按需读取
     });
     const data = results && results[0] && results[0].result;
     if (!data) {
@@ -301,7 +853,10 @@ async function capturePage() {
     const label = data.title || data.url || '（无标题）';
     setPageTitle(label, 'live');
     els.pageTitle.title =
-      data.url + '\n正文约 ' + data.length + ' 字' + (data.truncated ? '（已截断）' : '');
+      data.url +
+      '\n正文约 ' + data.length + ' 字' +
+      (data.truncated ? '（已截断）' : '') +
+      (data.partial ? '\n飞书文档：目前只读了屏幕附近的内容，提问或预览时会自动滚动读取全文' : '');
     lastPageUrl = data.url || lastPageUrl;
     return data;
   } catch (e) {
@@ -317,46 +872,24 @@ async function capturePage() {
   }
 }
 
-// ---------- 长页面分块参数 ----------
-// 单次直发的正文上限：正文不超过此值时一次性注入（快）
-const SINGLE_SHOT_LIMIT = 12000;
-// 分块时每块的目标大小
-const CHUNK_SIZE = 9000;
-// 分块数量硬上限，避免超长页面产生过多轮次
-const MAX_CHUNKS = 12;
+// ---------- 页面上下文 ----------
+// 正文不超过这个字数时后端直接内联进 prompt；更长的页面保存成文件，由 Kiro 按需读取。
+// 与 server/pages.js 的 INLINE_LIMIT 保持一致（这里只用于预览里的提示）。
+const PAGE_INLINE_LIMIT = 30000;
 
-/** 把长文本按段落边界尽量均匀地切成若干块 */
-function splitIntoChunks(text, size) {
-  const chunks = [];
-  let remaining = text;
-  while (remaining.length > size) {
-    // 在 size 附近寻找一个自然断点（段落 > 换行 > 句号 > 空格）
-    let cut = remaining.lastIndexOf('\n\n', size);
-    if (cut < size * 0.5) cut = remaining.lastIndexOf('\n', size);
-    if (cut < size * 0.5) cut = remaining.lastIndexOf('。', size);
-    if (cut < size * 0.5) cut = remaining.lastIndexOf('. ', size);
-    if (cut < size * 0.5) cut = remaining.lastIndexOf(' ', size);
-    if (cut < size * 0.5) cut = size; // 实在找不到就硬切
-    chunks.push(remaining.slice(0, cut).trim());
-    remaining = remaining.slice(cut).trim();
-  }
-  if (remaining) chunks.push(remaining);
-  return chunks;
-}
-
-/** 组装「首次注入页面」的头部说明 + 元信息 */
-function buildPageHeader(c) {
-  const parts = [
-    '你是一个网页阅读助手。下面是用户当前浏览的网页内容，请基于这些内容回答问题。',
-    '在本次对话接下来的追问中，请继续围绕这个页面作答（无需我再次提供页面内容）。',
-    '如果问题无法从页面内容中得到答案，请明确说明。',
-    '',
-    '【页面标题】' + (c.title || '(无)'),
-    '【页面网址】' + (c.url || '(无)'),
-  ];
-  if (c.description) parts.push('【页面描述】' + c.description);
-  if (c.selection) parts.push('', '【用户当前选中的文字】', c.selection);
-  return parts.join('\n');
+/** 发给后端的页面数据；prompt 由后端组装（见 server/pages.js） */
+function pagePayload(c) {
+  return {
+    title: c.title || '',
+    url: c.url || '',
+    description: c.description || '',
+    selection: c.selection || '',
+    text: c.text || '',
+    truncated: !!c.truncated || !!c.partial, // 飞书文档没读全时也按截断处理
+    isPdf: !!c.isPdf,
+    pages: c.pages,
+    parsedPages: c.parsedPages,
+  };
 }
 
 /**
@@ -364,21 +897,43 @@ function buildPageHeader(c) {
  * 返回一个 Promise，在该轮结束后 resolve。
  * options.silent: 该轮为内部「喂数据」轮，出错时不切换成错误气泡（交由上层处理）。
  */
-async function sendPrompt(prompt, answerEl) {
+async function sendPrompt(prompt, answerEl, page) {
   const payload = { prompt };
+  if (page) payload.page = page; // 首次涉及该页面：带上页面全文
   if (settings.model) payload.model = settings.model;
   if (settings.agent) payload.agent = settings.agent;
+  // 会话与 agent 绑定：agent 变了（例如在别的标签页切换过）就不再续聊旧会话
+  if (sessionId && convAgent !== (settings.agent || '')) {
+    sessionId = null;
+    injectedUrl = null;
+  }
+  if (!sessionId) convAgent = settings.agent || '';
   if (sessionId) payload.sessionId = sessionId; // 续聊：带上当前会话 id
 
-  const resp = await fetch(settings.endpoint + '/ask', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-    signal: currentController.signal,
-  });
+  const doFetch = () =>
+    fetch(settings.endpoint + '/ask', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      signal: currentController.signal,
+    });
+
+  let resp;
+  try {
+    resp = await doFetch();
+  } catch (e) {
+    if (e.name === 'AbortError') throw e;
+    // 网络错误：后端可能没起来，尝试自动启动后重试一次
+    backendOnline = false;
+    if (!(await ensureBackend())) {
+      throw new Error('无法连接后端 ' + settings.endpoint + '，请先启动本地服务');
+    }
+    resp = await doFetch();
+  }
 
   if (!resp.ok || !resp.body) {
     const txt = await resp.text().catch(() => '');
+    if (/agent 不存在/.test(txt)) loadAgents(true); // agent 被删了：刷新下拉框
     throw new Error('请求失败 HTTP ' + resp.status + ' ' + txt);
   }
 
@@ -386,6 +941,15 @@ async function sendPrompt(prompt, answerEl) {
 }
 
 // ---------- 发送与流式接收 ----------
+/** 飞书文档只抓了屏幕附近的部分时，滚动读取全文；失败时保留已有的部分内容 */
+async function ensureFullPage() {
+  const c = pageContext;
+  if (!els.useContext.checked || !c || !c.partial) return c;
+  await capturePage({ full: true });
+  if (!pageContext) pageContext = c;
+  return pageContext;
+}
+
 async function ask(question) {
   // 发送前确保已抓取页面（若开启上下文且尚未抓取）
   if (els.useContext.checked && !pageContext) {
@@ -400,32 +964,25 @@ async function ask(question) {
   setBusy(true);
   currentController = new AbortController();
 
-  // 判断本轮是否需要注入页面、是否需要分块
-  const c = pageContext;
+  // 判断本轮是否需要带上页面全文
+  let c = pageContext;
   const needInject =
     els.useContext.checked && c && !(injectedUrl && injectedUrl === c.url);
-  const pageText = c ? c.text || '' : '';
-  const needChunking = needInject && pageText.length > SINGLE_SHOT_LIMIT;
+
+  // 发出请求前就显示状态行和计时，kiro-cli 启动和首个事件之间界面不会空白
+  startLive(answerEl, needInject && c.partial ? '正在滚动读取飞书文档全文' : '等待 Kiro 响应');
+  if (needInject && c.partial) {
+    c = await ensureFullPage();
+    setLive(answerEl, '等待 Kiro 响应');
+  }
 
   try {
     if (!needInject) {
       // 不注入页面：直接发问题（含关闭上下文、或已注入过本页）
       await sendPrompt(question, answerEl);
-    } else if (!needChunking) {
-      // 页面不长：一次性注入全文 + 问题
-      const prompt =
-        buildPageHeader(c) +
-        '\n\n【页面正文' +
-        (c.truncated ? '（已截断）' : '') +
-        '】\n' +
-        pageText +
-        '\n\n【用户问题】\n' +
-        question;
-      await sendPrompt(prompt, answerEl);
-      injectedUrl = c.url;
     } else {
-      // 长页面：分块逐轮喂入，最后再发问题
-      await askWithChunking(c, pageText, question, answerEl);
+      // 首次涉及该页面：带上页面全文，后端决定内联还是存成文件按需读取
+      await sendPrompt(question, answerEl, pagePayload(c));
       injectedUrl = c.url;
     }
   } catch (e) {
@@ -437,9 +994,11 @@ async function ask(question) {
       answerEl.parentElement.className = 'msg error';
       answerEl.parentElement.querySelector('.role').textContent = '错误';
       answerEl.textContent = e.message;
-      checkHealth();
+      checkHealth(false);
     }
   } finally {
+    flushAnswer(answerEl);
+    stopLive(answerEl);
     answerEl.classList.remove('cursor');
     setBusy(false);
     currentController = null;
@@ -466,6 +1025,7 @@ function maybeAddAnswerActions(answerEl) {
   copyBtn.type = 'button';
   copyBtn.className = 'msg-action';
   copyBtn.innerHTML = actionIcon('copy') + '<span>复制</span>';
+  copyBtn.title = '复制';
   copyBtn.addEventListener('click', () => {
     navigator.clipboard
       .writeText(answerEl.dataset.raw || '')
@@ -477,6 +1037,7 @@ function maybeAddAnswerActions(answerEl) {
   regenBtn.type = 'button';
   regenBtn.className = 'msg-action';
   regenBtn.innerHTML = actionIcon('regen') + '<span>重新生成</span>';
+  regenBtn.title = '重新生成';
   regenBtn.addEventListener('click', () => {
     if (currentController || !lastQuestion) return;
     const q = lastQuestion;
@@ -521,67 +1082,6 @@ function actionIcon(kind) {
   );
 }
 
-/**
- * 长页面分块流程：
- * 1) 先发「头部说明 + 第 1 块」建立会话；
- * 2) 依次把剩余块作为「阅读」轮喂入（Kiro 只回确认，不作答）；
- * 3) 最后发用户问题，Kiro 基于全部块作答。
- * 喂入过程中在 answerEl 显示进度，真正作答时清空进度、渲染回答。
- */
-async function askWithChunking(c, pageText, question, answerEl) {
-  let chunks = splitIntoChunks(pageText, CHUNK_SIZE);
-
-  // 超过上限则合并尾部，保证块数可控
-  if (chunks.length > MAX_CHUNKS) {
-    const head = chunks.slice(0, MAX_CHUNKS - 1);
-    const tail = chunks.slice(MAX_CHUNKS - 1).join('\n\n');
-    chunks = head.concat(tail);
-  }
-  const total = chunks.length;
-
-  const showProgress = (i) => {
-    answerEl.classList.remove('md');
-    answerEl.textContent = '正在阅读长页面…（' + i + '/' + total + ' 块）';
-  };
-
-  // 第 1 块：带头部说明
-  showProgress(1);
-  const firstPrompt =
-    buildPageHeader(c) +
-    '\n\n这个页面较长，我会分 ' +
-    total +
-    ' 块发给你。请逐块阅读并记住，读完每一块只回复「已读第 N 块」，不要作答，等我最后提问。' +
-    '\n\n【第 1/' +
-    total +
-    ' 块】\n' +
-    chunks[0];
-  // 喂数据轮用一个临时隐藏容器接收 Kiro 的「已读」确认，避免污染回答区
-  const sink = document.createElement('div');
-  await sendPrompt(firstPrompt, sink);
-
-  // 中间块
-  for (let i = 1; i < total; i++) {
-    if (currentController.signal.aborted) throw new DOMException('aborted', 'AbortError');
-    showProgress(i + 1);
-    sink.textContent = '';
-    const p =
-      '【第 ' +
-      (i + 1) +
-      '/' +
-      total +
-      ' 块】\n' +
-      chunks[i] +
-      (i === total - 1 ? '\n\n（以上是最后一块，读完等我提问。）' : '');
-    await sendPrompt(p, sink);
-  }
-
-  // 最后：发用户问题，正式作答（渲染进 answerEl）
-  answerEl.classList.add('md');
-  answerEl.dataset.raw = '';
-  answerEl.textContent = '';
-  await sendPrompt('【用户问题】\n' + question, answerEl);
-}
-
 /** 解析 SSE 流（手写，因为 EventSource 不支持 POST）*/
 async function parseSSE(stream, answerEl) {
   const reader = stream.getReader();
@@ -624,8 +1124,20 @@ function handleSSEEvent(rawEvent, answerEl) {
   }
 
   if (eventName === 'chunk' && typeof data.text === 'string') {
+    markAnswering(answerEl);
     appendAssistantChunk(answerEl, data.text);
-    scrollToBottom();
+  } else if (eventName === 'thought' && typeof data.text === 'string') {
+    appendThought(answerEl, data.text);
+  } else if (eventName === 'tool' && data && data.id) {
+    upsertTool(answerEl, data);
+  } else if (eventName === 'page' && data.mode === 'file') {
+    if (!(answerEl._act && answerEl._act.answered)) setLive(answerEl, '页面较长，Kiro 正在按需阅读');
+  } else if (eventName === 'start' || eventName === 'status') {
+    if (!(answerEl._act && answerEl._act.answered)) setLive(answerEl, '思考中');
+  } else if (eventName === 'done') {
+    // 回答已生成完；kiro-cli 退出还要几秒，状态行先结束，用时按这里算
+    flushAnswer(answerEl);
+    stopLive(answerEl);
   } else if (eventName === 'session' && typeof data.sessionId === 'string') {
     // 保存会话 id，用于后续续聊
     sessionId = data.sessionId;
@@ -688,6 +1200,7 @@ function startNewConversation() {
   sessionId = null;
   injectedUrl = null;
   lastQuestion = null;
+  convAgent = settings.agent || '';
   showEmptyHint();
   saveConversation(); // 同步清空该标签页的持久化对话
 }
@@ -696,7 +1209,82 @@ els.settingsBtn.addEventListener('click', () => {
   chrome.runtime.openOptionsPage();
 });
 
-els.status.addEventListener('click', checkHealth);
+// ---------- 展开为全屏页 / 浏览器全屏 ----------
+const FULL_PAGE_URL = chrome.runtime.getURL('sidepanel.html');
+
+/** 在新标签页中打开当前对话；该标签页已有全屏页时直接切过去 */
+async function openFullPage() {
+  if (currentController) return;
+  const tab = await getActiveTab();
+  if (!tab) return;
+  await saveConversation(); // 先把当前对话写入，全屏页打开后直接读取
+  const url = FULL_PAGE_URL + '?mode=full&tabId=' + tab.id;
+  const all = await chrome.tabs.query({});
+  const existing = all.find((t) => t.url === url);
+  if (existing) {
+    await chrome.tabs.update(existing.id, { active: true });
+    await chrome.windows.update(existing.windowId, { focused: true }).catch(() => {});
+    return;
+  }
+  await chrome.tabs.create({ url, index: tab.index + 1, openerTabId: tab.id, windowId: tab.windowId });
+}
+
+function toggleBrowserFullscreen() {
+  if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+  else document.documentElement.requestFullscreen().catch(() => {});
+}
+
+els.expandBtn.addEventListener('click', openFullPage);
+els.fullscreenBtn.addEventListener('click', toggleBrowserFullscreen);
+document.addEventListener('fullscreenchange', () => {
+  const on = !!document.fullscreenElement;
+  document.body.classList.toggle('is-fullscreen', on);
+  els.fullscreenBtn.title = on ? '退出浏览器全屏（Esc）' : '浏览器全屏（F11 效果，Esc 退出）';
+});
+
+if (FULL_MODE) {
+  document.body.classList.add('full');
+  els.expandBtn.classList.add('hidden');
+  els.fullscreenBtn.classList.remove('hidden');
+  els.fullSrc.classList.remove('hidden');
+  els.input.rows = 2;
+}
+
+els.status.addEventListener('click', () => {
+  // 离线时点击 = 尝试启动；在线时点击 = 重新检测
+  if (!backendOnline && isLocalEndpoint(settings.endpoint)) {
+    checkHealth(false).then((ok) => ok || startBackend());
+  } else {
+    checkHealth(false);
+  }
+});
+
+els.startBackendBtn.addEventListener('click', () => startBackend());
+
+// 切换模型：写入同步设置（设置页也会同步显示），下一次提问生效
+els.modelSelect.addEventListener('change', () => {
+  settings.model = els.modelSelect.value;
+  syncModelSelect();
+  chrome.storage.sync.set({ model: settings.model }).catch(() => {});
+});
+
+// 切换 agent：会话与 agent 绑定，所以切换后开启新会话
+els.agentSelect.addEventListener('change', () => {
+  const next = els.agentSelect.value;
+  const hasConversation = !!els.messages.querySelector('.msg');
+  if (
+    hasConversation &&
+    !window.confirm('切换 Agent 会开启新会话，当前对话将被清空。继续吗？')
+  ) {
+    els.agentSelect.value = settings.agent || ''; // 取消：恢复原选择
+    return;
+  }
+  settings.agent = next;
+  syncAgentSelect();
+  syncModelSelect();
+  if (hasConversation) startNewConversation();
+  chrome.storage.sync.set({ agent: next }).catch(() => {});
+});
 
 // 快捷问题按钮
 els.quickActions.querySelectorAll('button').forEach((btn) => {
@@ -721,25 +1309,63 @@ document.addEventListener('keydown', (e) => {
   }
 });
 
+// 预览显示方式：渲染后的 Markdown，或 Markdown 原文。记住上次的选择
+let previewRaw = localStorage.getItem('previewRaw') === '1';
+
+/** 渲染预览正文：选中文字 + 页面正文 */
+function renderPreviewBody(c) {
+  const body = els.previewBody;
+  body.scrollTop = 0;
+  if (previewRaw) {
+    body.classList.remove('md');
+    let t = '';
+    if (c.selection) t += '【用户当前选中的文字】\n' + c.selection + '\n\n';
+    t += '【页面正文 · Markdown' + (c.truncated ? '（已截断）' : '') + '】\n' + (c.text || '(空)');
+    body.textContent = t;
+    return;
+  }
+  body.classList.add('md');
+  let html = '';
+  if (c.selection) {
+    html +=
+      '<div class="pv-section">用户当前选中的文字</div>' +
+      '<blockquote class="md-quote">' + escapeText(c.selection).replace(/\n/g, '<br/>') + '</blockquote>' +
+      '<div class="pv-section">页面正文</div>';
+  }
+  html += c.text ? renderMarkdown(c.text) : '<p class="md-p">(空)</p>';
+  body.innerHTML = html;
+  // 页面里的相对链接（/路径、#锚点）按页面网址解析，否则会指向扩展自己
+  body.querySelectorAll('a[href]').forEach((a) => {
+    const href = a.getAttribute('href');
+    if (/^(https?:|mailto:)/i.test(href)) return;
+    try {
+      a.setAttribute('href', new URL(href, c.url).href);
+    } catch {
+      a.removeAttribute('href');
+    }
+  });
+  wireCopyButtons(body);
+}
+
 async function openPreview() {
   // 若开启上下文但还没抓取，先抓一次
   if (els.useContext.checked && !pageContext) {
     await capturePage();
   }
+  await ensureFullPage();
   const c = pageContext;
   if (!els.useContext.checked) {
     els.previewMeta.innerHTML =
       '<span class="pv-tag pv-off">页面上下文已关闭</span>';
+    els.previewBody.classList.remove('md');
     els.previewBody.textContent = '当前不会把页面内容发给 Kiro。打开「页面上下文」开关后可预览。';
   } else if (!c) {
     els.previewMeta.innerHTML = '<span class="pv-tag pv-off">未抓取到页面</span>';
+    els.previewBody.classList.remove('md');
     els.previewBody.textContent = '当前页面无法读取或尚未抓取。';
   } else {
     const len = c.length || (c.text ? c.text.length : 0);
-    const willChunk = len > SINGLE_SHOT_LIMIT;
-    const nChunks = willChunk
-      ? Math.min(splitIntoChunks(c.text || '', CHUNK_SIZE).length, MAX_CHUNKS)
-      : 1;
+    const asFile = len > PAGE_INLINE_LIMIT;
     const already = injectedUrl && injectedUrl === c.url;
 
     const tags = [];
@@ -754,11 +1380,18 @@ async function openPreview() {
           '</span>'
       );
     }
+    if (c.site === 'feishu') {
+      tags.push(
+        c.partial
+          ? '<span class="pv-tag pv-warn">飞书文档 · 只读了屏幕附近的内容</span>'
+          : '<span class="pv-tag pv-chunk">飞书文档 · 已滚动读取全文</span>'
+      );
+    }
     tags.push('<span class="pv-tag">约 ' + len + ' 字</span>');
     if (c.truncated) tags.push('<span class="pv-tag pv-warn">已截断</span>');
     tags.push(
-      willChunk
-        ? '<span class="pv-tag pv-chunk">长页面 · 将分 ' + nChunks + ' 块喂入</span>'
+      asFile
+        ? '<span class="pv-tag pv-chunk">长页面 · 存成文件，Kiro 按需读取</span>'
         : '<span class="pv-tag">一次性注入</span>'
     );
     if (already) {
@@ -768,15 +1401,32 @@ async function openPreview() {
     let meta =
       '<div class="pv-title">' + escapeText(c.title || '(无标题)') + '</div>' +
       '<div class="pv-url">' + escapeText(c.url || '') + '</div>' +
-      '<div class="pv-tags">' + tags.join('') + '</div>';
+      '<div class="pv-tags">' + tags.join('') + '</div>' +
+      '<div class="pv-view" role="group" aria-label="显示方式">' +
+      '<button type="button" class="pv-view-btn" data-raw="0">渲染</button>' +
+      '<button type="button" class="pv-view-btn" data-raw="1">原文</button>' +
+      '</div>';
     els.previewMeta.innerHTML = meta;
 
-    let bodyText = '';
-    if (c.selection) {
-      bodyText += '【用户当前选中的文字】\n' + c.selection + '\n\n';
-    }
-    bodyText += '【页面正文' + (c.truncated ? '（已截断）' : '') + '】\n' + (c.text || '(空)');
-    els.previewBody.textContent = bodyText;
+    const syncViewBtns = () => {
+      els.previewMeta.querySelectorAll('.pv-view-btn').forEach((b) => {
+        const on = (b.dataset.raw === '1') === previewRaw;
+        b.classList.toggle('active', on);
+        b.setAttribute('aria-pressed', on ? 'true' : 'false');
+      });
+    };
+    els.previewMeta.querySelectorAll('.pv-view-btn').forEach((b) => {
+      b.addEventListener('click', () => {
+        const raw = b.dataset.raw === '1';
+        if (raw === previewRaw) return;
+        previewRaw = raw;
+        localStorage.setItem('previewRaw', raw ? '1' : '0');
+        syncViewBtns();
+        renderPreviewBody(c);
+      });
+    });
+    syncViewBtns();
+    renderPreviewBody(c);
   }
   els.previewModal.classList.remove('hidden');
 }
@@ -805,14 +1455,16 @@ els.useContext.addEventListener('change', () => {
 });
 
 // 切换标签页：保存旧标签页对话、恢复新标签页对话（含页面抓取）
+// 全屏页固定绑定源标签页，不跟随切换
 chrome.tabs.onActivated.addListener((info) => {
+  if (FULL_MODE) return;
   switchToTab(info.tabId);
 });
 // 同一标签页内导航完成后，仅刷新页面抓取（不开新会话，对话保留）
 chrome.tabs.onUpdated.addListener((tabId, info, tab) => {
   if (
     info.status === 'complete' &&
-    tab.active &&
+    (tab.active || FULL_MODE) && // 全屏页打开时源标签页不在前台，也要刷新
     tabId === currentTabId &&
     els.useContext.checked &&
     !currentController
@@ -823,6 +1475,14 @@ chrome.tabs.onUpdated.addListener((tabId, info, tab) => {
 // 标签页关闭：清除它的对话（实现「关页卡即清空」）
 chrome.tabs.onRemoved.addListener((tabId) => {
   chrome.storage.session.remove(CONV_PREFIX + tabId).catch(() => {});
+  if (FULL_MODE && tabId === BOUND_TAB_ID) {
+    // 源标签页关了：对话留在本页内存里继续用，不再持久化，也不再带页面内容
+    boundTabClosed = true;
+    currentTabId = null;
+    pageContext = null;
+    setPageTitle('源标签页已关闭，无法读取页面', 'err');
+    els.pageTitle.title = '对话仍可继续，但不会再带上页面内容；关闭本页后对话会丢失。';
+  }
 });
 
 // ---------- 右键「解释选中内容」处理 ----------
@@ -830,6 +1490,7 @@ let lastHandledActionTs = 0;
 
 /** 把一个 pendingAction 转成一次提问 */
 function runPendingAction(action) {
+  if (FULL_MODE) return; // 右键请求只由侧边栏处理，避免两边重复提问
   if (!action || !action.ts || action.ts === lastHandledActionTs) return;
   lastHandledActionTs = action.ts;
   if (action.type === 'explain') {
@@ -846,6 +1507,7 @@ function runPendingAction(action) {
 
 /** 读取并消费暂存的待处理请求 */
 async function consumePendingAction() {
+  if (FULL_MODE) return;
   try {
     const { pendingAction } = await chrome.storage.session.get('pendingAction');
     if (pendingAction) {
@@ -872,9 +1534,15 @@ function serializeConversation() {
     // 助手消息存原始 markdown，其它存纯文本
     const text =
       role === 'assistant' ? body.dataset.raw || '' : body.textContent || '';
-    msgs.push({ role, text });
+    const m = { role, text };
+    if (body._act) {
+      const steps = stepsForStorage(body);
+      if (steps.length) m.steps = steps;
+      if (body._act.meta) m.meta = body._act.meta;
+    }
+    msgs.push(m);
   });
-  return { msgs, sessionId, injectedUrl, lastQuestion, lastPageUrl };
+  return { msgs, sessionId, injectedUrl, lastQuestion, lastPageUrl, convAgent };
 }
 
 /** 把结构化对话渲染回 DOM */
@@ -885,7 +1553,7 @@ function renderConversation(state) {
     showEmptyHint();
   } else {
     for (const m of msgs) {
-      const body = addMessage(m.role, m.text);
+      const body = addMessage(m.role, m.text, m.steps, m.meta);
       // 为已完成的助手回答补上操作条
       if (m.role === 'assistant' && (m.text || '').trim()) {
         maybeAddAnswerActions(body);
@@ -896,18 +1564,40 @@ function renderConversation(state) {
   injectedUrl = (state && state.injectedUrl) || null;
   lastQuestion = (state && state.lastQuestion) || null;
   lastPageUrl = (state && state.lastPageUrl) || null;
+  // 旧版本保存的对话没有 convAgent，视为用当前 agent 开启
+  convAgent = state && typeof state.convAgent === 'string' ? state.convAgent : settings.agent || '';
 }
 
 /** 保存当前标签页的对话 */
 async function saveConversation() {
   if (currentTabId == null) return;
   try {
+    const state = serializeConversation();
+    lastSyncedConv = JSON.stringify(state);
     await chrome.storage.session.set({
-      [CONV_PREFIX + currentTabId]: serializeConversation(),
+      [CONV_PREFIX + currentTabId]: state,
     });
   } catch (e) {
     /* storage.session 不可用时忽略 */
   }
+}
+
+/**
+ * 侧边栏与全屏页同步：另一边保存了同一标签页的对话时，在本页重新渲染。
+ * 正在生成时不覆盖，等本轮结束后由本页自己保存。
+ */
+function onConversationChanged(newValue) {
+  if (currentController || restoring) return;
+  if (!newValue) return; // 被删除（标签页关闭）时由 onRemoved 处理
+  const json = JSON.stringify(newValue);
+  if (json === lastSyncedConv) return; // 自己刚写入的
+  lastSyncedConv = json;
+  const keepScroll = !isNearBottom();
+  const top = els.messages.scrollTop;
+  restoring = true;
+  renderConversation(newValue);
+  restoring = false;
+  if (keepScroll) els.messages.scrollTop = top; // 用户在看历史时不跳到底部
 }
 
 /** 读取某标签页的对话（无则返回 null） */
@@ -934,6 +1624,7 @@ async function switchToTab(tabId) {
   // 恢复目标标签页
   restoring = true;
   const state = await loadConversation(tabId);
+  lastSyncedConv = state ? JSON.stringify(state) : null;
   renderConversation(state);
   restoring = false;
   // 抓取新标签页的页面内容（供上下文使用）
@@ -943,10 +1634,16 @@ async function switchToTab(tabId) {
 // ---------- 初始化 ----------
 (async function init() {
   await loadSettings();
-  // 绑定到当前激活标签页，并恢复它的对话
+  syncModelSelect(); // 后端未就绪前先显示已保存的模型
+  syncAgentSelect();
+  // 绑定到当前激活标签页（全屏页则绑定源标签页），并恢复它的对话
   const tab = await getActiveTab();
   currentTabId = tab ? tab.id : null;
+  if (FULL_MODE && !tab) {
+    boundTabClosed = true; // 打开时源标签页就已经不存在了
+  }
   const saved = currentTabId != null ? await loadConversation(currentTabId) : null;
+  if (saved) lastSyncedConv = JSON.stringify(saved);
   if (saved && saved.msgs && saved.msgs.length) {
     restoring = true;
     renderConversation(saved);
@@ -963,9 +1660,28 @@ async function switchToTab(tabId) {
 // 设置变更时实时生效 + 监听右键请求（侧边栏已打开的情况）
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area === 'sync') {
-    loadSettings().then(checkHealth);
+    const keys = Object.keys(changes);
+    const onlyModel = keys.every((k) => k === 'model' || k === 'agent');
+    if (onlyModel) {
+      // 仅模型/agent 变化：更新本地状态即可，不必重新检测后端
+      loadSettings().then(() => {
+        syncAgentSelect();
+        syncModelSelect();
+      });
+    } else {
+      modelsLoaded = false; // 后端地址可能变了，重新拉模型列表
+      agentsLoaded = false;
+      loadSettings().then(() => checkHealth());
+    }
+  } else if (area === 'local' && changes.agentsRev) {
+    // 设置页增删改了 agent：重新拉取列表
+    loadAgents(true);
   } else if (area === 'session' && changes.pendingAction) {
     const action = changes.pendingAction.newValue;
     if (action) runPendingAction(action);
+  }
+  if (area === 'session' && currentTabId != null) {
+    const ch = changes[CONV_PREFIX + currentTabId];
+    if (ch) onConversationChanged(ch.newValue);
   }
 });

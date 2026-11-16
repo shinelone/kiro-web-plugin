@@ -3,7 +3,7 @@
   "name": "Kiro 页面问答",
   "version": "1.0.0",
   "description": "在浏览器侧边栏中调用本地 Kiro，对当前网页进行流式问答。",
-  "permissions": ["sidePanel", "storage", "activeTab", "scripting", "tabs", "contextMenus"],
+  "permissions": ["sidePanel", "storage", "activeTab", "scripting", "tabs", "contextMenus", "nativeMessaging"],
   "host_permissions": [
     "http://127.0.0.1/*",
     "http://localhost/*",

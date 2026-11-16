@@ -9,79 +9,106 @@
   <body>
     <!-- 顶栏 -->
     <header class="topbar">
-      <button class="status-chip" id="status" type="button" title="后端状态（点击重新检测）">
-        <span class="status-dot" aria-hidden="true"></span>
-        <span class="status-text" id="statusText">检测中</span>
-      </button>
+      <!-- 左：页面上下文（开关、页面标题、预览、重新抓取） -->
+      <div class="page-ctx" id="pagebar">
+        <label class="ctx-toggle" title="页面上下文：开启后，提问会带上当前页面内容">
+          <input type="checkbox" id="useContext" checked aria-label="页面上下文" />
+          <span class="switch" aria-hidden="true"></span>
+          <span class="ctx-label">页面上下文</span>
+        </label>
+        <span class="full-src hidden" id="fullSrc" title="全屏页始终针对打开它的那个标签页">绑定页面</span>
+        <span class="page-title" id="pageTitle" title="">未获取页面</span>
+        <button
+          class="icon-btn icon-btn--sm"
+          id="previewBtn"
+          type="button"
+          title="预览发给 Kiro 的页面内容"
+          aria-label="预览页面内容"
+        >
+          <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path
+              d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"
+              stroke="currentColor"
+              stroke-width="1.7"
+              stroke-linejoin="round"
+            />
+            <circle cx="12" cy="12" r="2.75" stroke="currentColor" stroke-width="1.7" />
+          </svg>
+        </button>
+        <button
+          class="icon-btn icon-btn--sm"
+          id="refreshPageBtn"
+          type="button"
+          title="重新抓取当前页面"
+          aria-label="重新抓取当前页面"
+        >
+          <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path
+              d="M20 12a8 8 0 10-2.3 5.6M20 7v5h-5"
+              stroke="currentColor"
+              stroke-width="1.7"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            />
+          </svg>
+        </button>
+      </div>
 
-      <button class="icon-btn" id="settingsBtn" type="button" title="设置" aria-label="设置">
-        <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-          <circle cx="12" cy="12" r="3" stroke="currentColor" stroke-width="1.6" />
-          <path
-            d="M12 2.5l1.3 2.2 2.5-.5.4 2.5 2.3 1.1-1 2.3 1 2.3-2.3 1.1-.4 2.5-2.5-.5L12 21.5l-1.3-2.2-2.5.5-.4-2.5-2.3-1.1 1-2.3-1-2.3 2.3-1.1.4-2.5 2.5.5L12 2.5z"
-            stroke="currentColor"
-            stroke-width="1.6"
-            stroke-linejoin="round"
-          />
-        </svg>
-      </button>
+      <span class="bar-divider" aria-hidden="true"></span>
 
-      <button class="icon-btn" id="clearBtn" type="button" title="开启新会话（清空对话与记忆）" aria-label="开启新会话">
-        <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-          <path
-            d="M4 7h16M9.5 7V5.5A1.5 1.5 0 0111 4h2a1.5 1.5 0 011.5 1.5V7M6 7l.8 11.2A2 2 0 008.8 20h6.4a2 2 0 002-1.8L18 7M10 11v5M14 11v5"
-            stroke="currentColor"
-            stroke-width="1.6"
-            stroke-linecap="round"
-            stroke-linejoin="round"
-          />
-        </svg>
-      </button>
+      <!-- 右：后端状态与全局操作 -->
+      <div class="bar-actions">
+        <button class="status-chip" id="status" type="button" title="后端状态（点击重新检测）">
+          <span class="status-dot" aria-hidden="true"></span>
+          <span class="status-text" id="statusText">检测中</span>
+        </button>
+        <button class="icon-btn" id="expandBtn" type="button" title="在新标签页中全屏打开" aria-label="全屏打开">
+          <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path d="M14 4h6v6M20 4l-7 7M10 20H4v-6M4 20l7-7" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
+          </svg>
+        </button>
+
+        <button class="icon-btn hidden" id="fullscreenBtn" type="button" title="浏览器全屏（F11 效果，Esc 退出）" aria-label="浏览器全屏">
+          <svg class="fs-enter" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
+          </svg>
+          <svg class="fs-exit" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path d="M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
+          </svg>
+        </button>
+
+        <button class="icon-btn" id="settingsBtn" type="button" title="设置" aria-label="设置">
+          <!-- 滑块（调节）图标 -->
+          <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path
+              d="M4 7h9M17 7h3M4 17h3M11 17h9"
+              stroke="currentColor"
+              stroke-width="1.6"
+              stroke-linecap="round"
+            />
+            <circle cx="15" cy="7" r="2" stroke="currentColor" stroke-width="1.6" />
+            <circle cx="9" cy="17" r="2" stroke="currentColor" stroke-width="1.6" />
+          </svg>
+        </button>
+
+        <button class="icon-btn" id="clearBtn" type="button" title="开启新会话（清空对话与记忆）" aria-label="开启新会话">
+          <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path
+              d="M4 7h16M9.5 7V5.5A1.5 1.5 0 0111 4h2a1.5 1.5 0 011.5 1.5V7M6 7l.8 11.2A2 2 0 008.8 20h6.4a2 2 0 002-1.8L18 7M10 11v5M14 11v5"
+              stroke="currentColor"
+              stroke-width="1.6"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            />
+          </svg>
+        </button>
+      </div>
     </header>
 
-    <!-- 页面上下文栏 -->
-    <div class="pagebar" id="pagebar">
-      <label class="ctx-toggle" title="开启后，提问会带上当前页面内容">
-        <input type="checkbox" id="useContext" checked />
-        <span class="switch" aria-hidden="true"></span>
-        <span class="ctx-label">页面上下文</span>
-      </label>
-      <span class="page-divider" aria-hidden="true"></span>
-      <span class="page-title" id="pageTitle" title="">未获取页面</span>
-      <button
-        class="icon-btn icon-btn--sm"
-        id="previewBtn"
-        type="button"
-        title="预览发给 Kiro 的页面内容"
-        aria-label="预览页面内容"
-      >
-        <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-          <path
-            d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"
-            stroke="currentColor"
-            stroke-width="1.7"
-            stroke-linejoin="round"
-          />
-          <circle cx="12" cy="12" r="2.75" stroke="currentColor" stroke-width="1.7" />
-        </svg>
-      </button>
-      <button
-        class="icon-btn icon-btn--sm"
-        id="refreshPageBtn"
-        type="button"
-        title="重新抓取当前页面"
-        aria-label="重新抓取当前页面"
-      >
-        <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-          <path
-            d="M20 12a8 8 0 10-2.3 5.6M20 7v5h-5"
-            stroke="currentColor"
-            stroke-width="1.7"
-            stroke-linecap="round"
-            stroke-linejoin="round"
-          />
-        </svg>
-      </button>
+    <!-- 后端离线横幅 -->
+    <div class="backend-bar hidden" id="backendBar" role="status">
+      <span class="backend-msg" id="backendMsg">后端未运行</span>
+      <button type="button" class="backend-btn" id="startBackendBtn">启动后端</button>
     </div>
 
     <!-- 页面内容预览浮层 -->
@@ -100,19 +127,19 @@
       </div>
     </div>
 
-    <!-- 快捷问题 -->
-    <div class="quick-actions" id="quickActions">
-      <button type="button" data-q="请用中文简明总结这个页面的主要内容，分点列出。">总结页面</button>
-      <button type="button" data-q="请把这个页面的核心要点提炼成不超过 5 条的清单。">提取要点</button>
-      <button type="button" data-q="请把这个页面的主要内容翻译成中文。">翻译</button>
-      <button type="button" data-q="这个页面里有哪些关键数据、数字或结论？请列出来。">关键数据</button>
-    </div>
-
+    
     <!-- 对话区 -->
     <main class="messages" id="messages"></main>
 
     <!-- 输入区 -->
     <form class="composer" id="composer">
+      <!-- 快捷问题 -->
+      <div class="quick-actions" id="quickActions">
+        <button type="button" data-q="请用中文简明总结这个页面的主要内容，分点列出。">总结页面</button>
+        <button type="button" data-q="请把这个页面的核心要点提炼成不超过 5 条的清单。">提取要点</button>
+        <button type="button" data-q="请把这个页面的主要内容翻译成中文。">翻译</button>
+        <button type="button" data-q="这个页面里有哪些关键数据、数字或结论？请列出来。">关键数据</button>
+      </div>
       <div class="composer-field">
         <textarea
           id="input"
@@ -136,8 +163,30 @@
           </svg>
         </button>
       </div>
+      <div class="composer-tools">
+        <label class="model-pick" id="agentPick" title="切换 Agent（切换后开启新会话）">
+          <svg class="model-pick-icon" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+            <circle cx="12" cy="8" r="3.5" stroke="currentColor" stroke-width="1.6" />
+            <path d="M5 20c.8-3.6 3.6-5.5 7-5.5s6.2 1.9 7 5.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+          </svg>
+          <select id="agentSelect" aria-label="Agent">
+            <option value="">默认 Agent</option>
+          </select>
+        </label>
+        <label class="model-pick" id="modelPick" title="切换模型（对应 kiro-cli --model）">
+          <svg class="model-pick-icon" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+            <path d="M12 3l8 4.5v9L12 21l-8-4.5v-9L12 3z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" />
+            <path d="M4 7.5l8 4.5 8-4.5M12 12v9" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" />
+          </svg>
+          <select id="modelSelect" aria-label="模型">
+            <option value="">跟随 Agent</option>
+          </select>
+        </label>
+        <span class="tool-chips" id="toolChips" title="当前 Agent 可用的工具"></span>
+      </div>
     </form>
 
+    <script src="native.js"></script>
     <script src="extract.js"></script>
     <script src="markdown.js"></script>
     <script type="module" src="pdf-extract.js"></script>
