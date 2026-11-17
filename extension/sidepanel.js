@@ -9,6 +9,11 @@ const els = {
   sendBtn: document.getElementById('sendBtn'),
   stopBtn: document.getElementById('stopBtn'),
   clearBtn: document.getElementById('clearBtn'),
+  historyBtn: document.getElementById('historyBtn'),
+  histPanel: document.getElementById('histPanel'),
+  histList: document.getElementById('histList'),
+  histClose: document.getElementById('histClose'),
+  histClear: document.getElementById('histClear'),
   settingsBtn: document.getElementById('settingsBtn'),
   status: document.getElementById('status'),
   statusText: document.getElementById('statusText'),
@@ -58,6 +63,7 @@ let injectedUrl = null; // 已把哪个页面的全文注入过会话（避免�
 let lastPageUrl = null; // 上一次抓取到的页面 url（用于检测换页）
 let lastQuestion = null; // 最近一次用户提问（用于「重新生成」）
 let convAgent = ''; // 当前会话是用哪个 agent 开启的（换 agent 后不能续聊旧会话）
+let convId = null; // 当前对话的稳定 id（持久化到后端 ~/.ai/kiro/history 的文件名）
 
 // ---------- 按标签页隔离的会话持久化 ----------
 // 对话绑定到打开它的标签页：切走切回不丢，关闭标签页即清空。
@@ -1346,18 +1352,165 @@ els.clearBtn.addEventListener('click', () => {
   startNewConversation();
 });
 
+// ---------- 对话历史面板 ----------
+let histOpen = false;
+
+function setHistOpen(open) {
+  histOpen = !!open;
+  document.body.classList.toggle('hist-open', histOpen);
+  els.historyBtn.setAttribute('aria-pressed', histOpen ? 'true' : 'false');
+  els.historyBtn.classList.toggle('active', histOpen);
+  if (histOpen) loadHistoryList();
+}
+els.historyBtn.addEventListener('click', () => setHistOpen(!histOpen));
+els.histClose.addEventListener('click', () => setHistOpen(false));
+
+/** 拉取历史列表并渲染 */
+async function loadHistoryList() {
+  els.histList.innerHTML = '<div class="hist-empty">加载中…</div>';
+  let items = [];
+  try {
+    const r = await fetch(settings.endpoint + '/history');
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    items = (await r.json()).history || [];
+  } catch (e) {
+    els.histList.innerHTML = '<div class="hist-empty">无法读取历史（后端离线？）</div>';
+    return;
+  }
+  if (!items.length) {
+    els.histList.innerHTML = '<div class="hist-empty">还没有历史对话。提问后会自动保存到这里。</div>';
+    return;
+  }
+  els.histList.innerHTML = '';
+  for (const it of items) {
+    const row = document.createElement('div');
+    row.className = 'hist-item' + (it.id === convId ? ' current' : '');
+    row.dataset.id = it.id;
+
+    const main = document.createElement('button');
+    main.type = 'button';
+    main.className = 'hist-main';
+    const title = document.createElement('div');
+    title.className = 'hist-item-title';
+    title.textContent = it.title || '(无标题)';
+    const sub = document.createElement('div');
+    sub.className = 'hist-item-sub';
+    sub.textContent = relTime(it.updatedAt) + ' · ' + (it.count || 0) + ' 条' + (it.agent ? ' · ' + it.agent : '');
+    main.append(title, sub);
+    main.addEventListener('click', () => openHistory(it.id));
+
+    const del = document.createElement('button');
+    del.type = 'button';
+    del.className = 'hist-del';
+    del.title = '删除这条历史';
+    del.setAttribute('aria-label', '删除');
+    del.innerHTML =
+      '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 7l10 10M17 7L7 17" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>';
+    del.addEventListener('click', (e) => {
+      e.stopPropagation();
+      deleteHistory(it.id, row);
+    });
+
+    row.append(main, del);
+    els.histList.appendChild(row);
+  }
+}
+
+function relTime(ts) {
+  if (!ts) return '';
+  const d = Date.now() - ts;
+  const min = Math.floor(d / 60000);
+  if (min < 1) return '刚刚';
+  if (min < 60) return min + ' 分钟前';
+  const h = Math.floor(min / 60);
+  if (h < 24) return h + ' 小时前';
+  const day = Math.floor(h / 24);
+  if (day < 7) return day + ' 天前';
+  return new Date(ts).toLocaleDateString();
+}
+
+/** 打开一条历史：先存当前对话，再把它加载进当前视图继续聊 */
+async function openHistory(id) {
+  if (currentController) return; // 生成中不切换
+  if (id === convId) {
+    setHistOpen(false);
+    return;
+  }
+  await saveConversation(); // 保住当前对话
+  let state;
+  try {
+    const r = await fetch(settings.endpoint + '/history/' + encodeURIComponent(id));
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    state = await r.json();
+  } catch (e) {
+    return;
+  }
+  restoring = true;
+  renderConversation(state);
+  restoring = false;
+  lastSyncedConv = JSON.stringify(serializeConversation());
+  // 写回当前标签页 session，让全屏页 / 切回来时看到的是这条
+  if (currentTabId != null) {
+    chrome.storage.session.set({ [CONV_PREFIX + currentTabId]: serializeConversation() }).catch(() => {});
+  }
+  setHistOpen(false);
+  forceScrollBottom();
+}
+
+async function deleteHistory(id, row) {
+  try {
+    await fetch(settings.endpoint + '/history/' + encodeURIComponent(id), { method: 'DELETE' });
+  } catch (e) {
+    /* 后端离线：忽略 */
+  }
+  row.remove();
+  if (id === convId) startNewConversation(); // 删的是当前对话：开个新的
+  if (!els.histList.querySelector('.hist-item')) loadHistoryList();
+}
+
+els.histClear.addEventListener('click', async () => {
+  if (els.histClear.dataset.armed !== '1') {
+    els.histClear.dataset.armed = '1';
+    els.histClear.textContent = '确认清空';
+    els.histClear.classList.add('danger');
+    setTimeout(() => {
+      els.histClear.dataset.armed = '0';
+      els.histClear.textContent = '清空';
+      els.histClear.classList.remove('danger');
+    }, 2500);
+    return;
+  }
+  els.histClear.dataset.armed = '0';
+  els.histClear.textContent = '清空';
+  els.histClear.classList.remove('danger');
+  try {
+    await fetch(settings.endpoint + '/history', { method: 'DELETE' });
+  } catch (e) {
+    /* 忽略 */
+  }
+  startNewConversation();
+  loadHistoryList();
+});
+
+
 /** 开启新会话：清空消息、丢弃会话 id 和注入记录 */
 function startNewConversation() {
+  // 当前对话已持久化在后端历史里，这里只是开一个新的空对话
   els.messages.innerHTML = '';
   sessionId = null;
   injectedUrl = null;
   lastQuestion = null;
   convAgent = settings.agent || '';
+  convId = null; // 下一条消息会分配新 id
   setQuote(null);
   origImages.clear();
   showEmptyHint();
   refreshMap();
-  saveConversation(); // 同步清空该标签页的持久化对话
+  // 清空该标签页 session 里的当前对话（不碰后端历史）
+  if (currentTabId != null) {
+    lastSyncedConv = JSON.stringify(serializeConversation());
+    chrome.storage.session.set({ [CONV_PREFIX + currentTabId]: serializeConversation() }).catch(() => {});
+  }
 }
 
 els.settingsBtn.addEventListener('click', () => {
@@ -1429,7 +1582,7 @@ els.agentSelect.addEventListener('change', () => {
   const hasConversation = !!els.messages.querySelector('.msg');
   if (
     hasConversation &&
-    !window.confirm('切换 Agent 会开启新会话，当前对话将被清空。继续吗？')
+    !window.confirm('切换 Agent 会开启新对话，当前对话会留在历史里。继续吗？')
   ) {
     els.agentSelect.value = settings.agent || ''; // 取消：恢复原选择
     return;
@@ -1700,7 +1853,7 @@ function serializeConversation() {
     }
     msgs.push(m);
   });
-  return { msgs, sessionId, injectedUrl, lastQuestion, lastPageUrl, convAgent };
+  return { msgs, sessionId, injectedUrl, lastQuestion, lastPageUrl, convAgent, convId };
 }
 
 /** 把结构化对话渲染回 DOM */
@@ -1724,22 +1877,47 @@ function renderConversation(state) {
   lastPageUrl = (state && state.lastPageUrl) || null;
   // 旧版本保存的对话没有 convAgent，视为用当前 agent 开启
   convAgent = state && typeof state.convAgent === 'string' ? state.convAgent : settings.agent || '';
+  convId = (state && state.convId) || null;
   applyAnchors();
   refreshMap();
 }
 
-/** 保存当前标签页的对话 */
+/** 保存当前标签页的对话：写 session（实时同步 + 快速恢复）+ 持久化到后端历史 */
 async function saveConversation() {
   if (currentTabId == null) return;
   try {
+    const hasMsg = els.messages.querySelector('.msg');
+    if (hasMsg && !convId) convId = newConvId(); // 有内容才分配 id
     const state = serializeConversation();
     lastSyncedConv = JSON.stringify(state);
     await chrome.storage.session.set({
       [CONV_PREFIX + currentTabId]: state,
     });
+    if (hasMsg && convId) persistHistory(convId, state);
   } catch (e) {
     /* storage.session 不可用时忽略 */
   }
+}
+
+// ---------- 持久化对话历史（后端 ~/.ai/kiro/history） ----------
+function newConvId() {
+  return 'c' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+}
+
+const histSaveTimers = new Map(); // convId -> timer（防抖，流式输出时不频繁写盘）
+function persistHistory(id, state) {
+  clearTimeout(histSaveTimers.get(id));
+  histSaveTimers.set(
+    id,
+    setTimeout(() => {
+      histSaveTimers.delete(id);
+      fetch(settings.endpoint + '/history/' + encodeURIComponent(id), {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ state }),
+      }).catch(() => {}); // 后端离线：静默，session 里仍有当前对话
+    }, 600)
+  );
 }
 
 /**

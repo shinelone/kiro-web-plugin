@@ -24,6 +24,7 @@ const readscope = require('./readscope');
 const shellconfig = require('./shellconfig');
 const shellpolicy = require('./shellpolicy');
 const { TerminalManager, detectSandbox } = require('./terminal');
+const history = require('./history');
 
 // ----- 配置 -----
 const PORT = Number(process.env.PORT || 8787);
@@ -481,6 +482,35 @@ async function handleAsk(req, res) {
   }
 }
 
+/** 处理 /history：对话历史的增删查 */
+async function handleHistory(req, res, url) {
+  const m = url.pathname.match(/^\/history(?:\/([^/]+))?$/);
+  const id = m && m[1] ? decodeURIComponent(m[1]) : null;
+  try {
+    if (!id && req.method === 'GET') {
+      return sendJson(res, 200, { history: history.list() });
+    }
+    if (!id && req.method === 'DELETE') {
+      return sendJson(res, 200, history.clear());
+    }
+    if (id && req.method === 'GET') {
+      const conv = history.get(id);
+      return conv ? sendJson(res, 200, conv) : sendJson(res, 404, { error: '对话不存在' });
+    }
+    if (id && req.method === 'PUT') {
+      const body = JSON.parse((await readBody(req, 24 << 20)) || '{}');
+      const r = history.save(id, body);
+      return r.error ? sendJson(res, 400, { error: r.error }) : sendJson(res, 200, r);
+    }
+    if (id && req.method === 'DELETE') {
+      return sendJson(res, 200, history.remove(id));
+    }
+    return sendJson(res, 405, { error: 'method not allowed' });
+  } catch (e) {
+    return sendJson(res, e instanceof SyntaxError ? 400 : 500, { error: e.message });
+  }
+}
+
 /** 处理 /permission：插件回传命令确认结果 { sessionId, reqId, decision } */
 async function handlePermission(req, res) {
   let body;
@@ -548,7 +578,7 @@ const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://localhost:${PORT}`);
 
   if (req.method === 'GET' && url.pathname === '/health') {
-    sendJson(res, 200, { ok: true, kiroBin: KIRO_BIN, features: ['models', 'agents', 'acp', 'page', 'image', 'config', 'shell'], acp: acp.status() });
+    sendJson(res, 200, { ok: true, kiroBin: KIRO_BIN, features: ['models', 'agents', 'acp', 'page', 'image', 'config', 'shell', 'history'], acp: acp.status() });
     return;
   }
 
@@ -593,6 +623,12 @@ const server = http.createServer(async (req, res) => {
 
   if (req.method === 'POST' && url.pathname === '/permission') {
     await handlePermission(req, res);
+    return;
+  }
+
+  // 对话历史：持久化到 ~/.ai/kiro/history
+  if (url.pathname === '/history' || url.pathname.startsWith('/history/')) {
+    await handleHistory(req, res, url);
     return;
   }
 
