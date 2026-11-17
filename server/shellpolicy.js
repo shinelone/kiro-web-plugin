@@ -15,7 +15,7 @@ const READONLY = new Set([
   'echo', 'printf', 'date', 'cal', 'whoami', 'id', 'hostname', 'uname', 'sw_vers', 'arch',
   'env', 'printenv', 'which', 'type', 'basename', 'dirname', 'realpath', 'readlink',
   'grep', 'egrep', 'fgrep', 'rg', 'ag', 'find', 'tree', 'sort', 'uniq', 'cut', 'tr', 'column', 'diff', 'comm',
-  'ps', 'top', 'uptime', 'vm_stat', 'sysctl', 'ioreg', 'system_profiler', 'networksetup', 'scutil',
+  'ps', 'top', 'uptime', 'vm_stat', 'sysctl', 'ioreg', 'system_profiler',
 ]);
 
 // 解释器 / 包管理器：会跑任意代码，默认需确认，只有版本 / 帮助 / 查询类子命令才自动放行
@@ -41,13 +41,13 @@ const BANNED_CMDS = new Set([
   'sudo', 'su', 'doas',
   'mkfs', 'fdisk', 'diskutil', 'newfs',
   'shutdown', 'reboot', 'halt', 'poweroff',
-  'launchctl', 'crontab', 'at', 'systemsetup', 'nvram', 'pmset', 'scutil',
+  'launchctl', 'crontab', 'at',
   'csrutil', 'spctl', 'kextload', 'kextunload',
   'passwd', 'dscl', 'sysadminctl', 'createhomedir',
-  'security', 'defaults', // security dump-keychain / defaults 读敏感配置
-  'osascript', 'automator', // AppleScript 可绕过很多限制
-  'chown', 'chmod', // 批量改权限风险高，需要时用户可从白名单放开
+  'osascript', 'automator', // AppleScript 可绕过沙箱与很多限制
 ]);
+// 系统查询 / 配置类：不自动放行、也不硬禁止，一律弹卡片让用户决定。
+// 它们多有只读子命令（pmset -g、scutil --get、networksetup -getinfo），敏感读取另由 BANNED_PATTERNS 拦截。
 
 // 命中这些片段直接禁止（正则，针对整条命令）
 const BANNED_PATTERNS = [
