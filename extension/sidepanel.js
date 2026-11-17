@@ -1210,6 +1210,10 @@ function handleSSEEvent(rawEvent, answerEl) {
     upsertTool(answerEl, data);
   } else if (eventName === 'page' && data.mode === 'file') {
     if (!(answerEl._act && answerEl._act.answered)) setLive(answerEl, '页面较长，Kiro 正在按需阅读');
+  } else if (eventName === 'permission') {
+    showPermissionCard(answerEl, data);
+  } else if (eventName === 'permission_timeout') {
+    resolvePermissionCard(data.reqId, '（超时未确认，已拒绝）');
   } else if (eventName === 'start' || eventName === 'status') {
     if (!(answerEl._act && answerEl._act.answered)) setLive(answerEl, '思考中');
   } else if (eventName === 'done') {
@@ -1721,6 +1725,102 @@ async function switchToTab(tabId) {
   restoring = false;
   // 抓取新标签页的页面内容（供上下文使用）
   if (els.useContext.checked) capturePage();
+}
+
+// ---------- 命令执行确认卡片 ----------
+const pendingPermCards = new Map(); // reqId -> card element
+
+/** 在回答上方插入一张「Kiro 想运行命令」的确认卡片 */
+function showPermissionCard(answerEl, data) {
+  const act = answerEl._act;
+  const host = act ? act.stepsEl : answerEl;
+  const card = document.createElement('div');
+  card.className = 'perm-card';
+  card.dataset.req = data.reqId;
+
+  const head = document.createElement('div');
+  head.className = 'perm-head';
+  head.innerHTML =
+    '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 6h16M4 6l1 13a2 2 0 002 2h10a2 2 0 002-2l1-13" stroke="currentColor" stroke-width="0" /><rect x="3.5" y="4.5" width="17" height="15" rx="2.5" stroke="currentColor" stroke-width="1.6"/><path d="M7 9l3 3-3 3M12.5 15H17" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>' +
+    '<span>Kiro 想运行命令</span>';
+  card.appendChild(head);
+
+  const cmd = document.createElement('pre');
+  cmd.className = 'perm-cmd';
+  cmd.textContent = data.command || '';
+  card.appendChild(cmd);
+
+  const meta = document.createElement('div');
+  meta.className = 'perm-meta';
+  meta.textContent = '目录：' + shortPath(data.cwd || '');
+  card.appendChild(meta);
+
+  if (data.why) {
+    const why = document.createElement('div');
+    why.className = 'perm-why' + (data.net ? ' perm-why-net' : '');
+    why.textContent = data.why;
+    card.appendChild(why);
+  }
+
+  const btns = document.createElement('div');
+  btns.className = 'perm-btns';
+  const mk = (label, decision, cls) => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'perm-btn' + (cls ? ' ' + cls : '');
+    b.textContent = label;
+    b.addEventListener('click', () => decidePermission(data.reqId, decision, label));
+    return b;
+  };
+  const firstCmd = (data.first || (data.command || '').split(/\s+/)[0] || '').slice(0, 20);
+  btns.appendChild(mk('允许一次', 'allow', 'primary'));
+  // 只有当「第一个词」是正常命令名时才给「本会话都允许」，像 [、( 这类没意义
+  if (/^[A-Za-z][A-Za-z0-9._-]*$/.test(firstCmd)) btns.appendChild(mk('本会话都允许 ' + firstCmd, 'always'));
+  btns.appendChild(mk('拒绝', 'deny'));
+  card.appendChild(btns);
+
+  host.appendChild(card);
+  pendingPermCards.set(data.reqId, card);
+  setLive(answerEl, '等待你确认命令');
+  followScroll();
+}
+
+function shortPath(p) {
+  const home = '/Users/';
+  if (p.startsWith(home)) {
+    const rest = p.slice(home.length).split('/').slice(1).join('/');
+    return '~/' + rest;
+  }
+  return p;
+}
+
+async function decidePermission(reqId, decision, label) {
+  const card = pendingPermCards.get(reqId);
+  try {
+    await fetch(settings.endpoint + '/permission', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sessionId, reqId, decision }),
+    });
+  } catch (e) {
+    /* 后端断了，卡片照常收起 */
+  }
+  resolvePermissionCard(reqId, decision === 'deny' ? '已拒绝' : '已' + (label || '允许'));
+}
+
+/** 用户已决定或超时：把卡片变成一行结果 */
+function resolvePermissionCard(reqId, resultText) {
+  const card = pendingPermCards.get(reqId);
+  if (!card) return;
+  pendingPermCards.delete(reqId);
+  card.classList.add('perm-done');
+  const cmd = card.querySelector('.perm-cmd');
+  const text = cmd ? cmd.textContent : '';
+  card.innerHTML =
+    '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="3.5" y="4.5" width="17" height="15" rx="2.5" stroke="currentColor" stroke-width="1.6"/></svg>' +
+    '<span class="perm-done-cmd"></span><span class="perm-done-result"></span>';
+  card.querySelector('.perm-done-cmd').textContent = text;
+  card.querySelector('.perm-done-result').textContent = resultText;
 }
 
 // ---------- 图片：粘贴、拖放、选择文件、截取网页 ----------

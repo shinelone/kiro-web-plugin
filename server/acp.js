@@ -32,11 +32,13 @@ const RESTART_BACKOFF_MS = [0, 1000, 3000, 10000]; // 连续崩溃时的重启�
 class AcpError extends Error {}
 
 class AcpManager {
-  constructor({ kiroBin, cwd, canReadFile = () => false, denyMessage = null, log = () => {} }) {
+  constructor({ kiroBin, cwd, canReadFile = () => false, denyMessage = null, terminal = null, approveCommand = null, log = () => {} }) {
     this.kiroBin = kiroBin;
     this.cwd = cwd;
     this.canReadFile = canReadFile;
     this.denyMessage = denyMessage;
+    this.terminal = terminal; // TerminalManager，决定是否声明 terminal 能力
+    this.approveCommand = approveCommand; // async (sessionId, command, verdict) => 'allow' | 'deny'
     this.log = log;
     this.proc = null;
     this.ready = null; // Promise<void>，进程启动并完成 initialize
@@ -90,7 +92,7 @@ class AcpManager {
 
     await this._request('initialize', {
       protocolVersion: 1,
-      clientCapabilities: { fs: { readTextFile: true, writeTextFile: false }, terminal: false },
+      clientCapabilities: { fs: { readTextFile: true, writeTextFile: false }, terminal: !!this.terminal },
     });
     this.state = 'ready';
     this.log(`kiro-cli acp 已启动 (pid ${proc.pid})`);
@@ -219,22 +221,80 @@ class AcpManager {
 
   _onAgentRequest(m) {
     if (m.method === 'session/request_permission') {
-      // 与以前的 --trust-all-tools 一致：agent 能看到的工具都自动同意。
-      // 能用哪些工具由 agent 配置里的 tools 决定。
-      const opts = (m.params && m.params.options) || [];
-      const opt = opts.find((o) => o.kind === 'allow_once') || opts.find((o) => /allow/.test(o.kind || ''));
-      this._safeSend({
-        id: m.id,
-        result: opt ? { outcome: { outcome: 'selected', optionId: opt.optionId } } : { outcome: { outcome: 'cancelled' } },
-      });
+      this._requestPermission(m);
       return;
     }
     if (m.method === 'fs/read_text_file') {
       this._readTextFile(m);
       return;
     }
-    // 没声明写文件 / terminal 能力，其它请求一律回「不支持」
+    if (m.method === '_kiro/terminal/shell_type') {
+      this._safeSend({ id: m.id, result: { shellType: 'zsh' } });
+      return;
+    }
+    if (this.terminal && m.method.startsWith('terminal/')) {
+      this._onTerminal(m);
+      return;
+    }
+    // 其它请求一律回「不支持」
     this._safeSend({ id: m.id, error: { code: -32601, message: 'Method not supported: ' + m.method } });
+  }
+
+  /** 工具授权：读文件、非命令工具自动同意；命令按审批回调决定 */
+  async _requestPermission(m) {
+    const opts = (m.params && m.params.options) || [];
+    const allow = opts.find((o) => o.kind === 'allow_once') || opts.find((o) => /allow/.test(o.kind || ''));
+    const reject = opts.find((o) => o.kind === 'reject_once') || opts.find((o) => /reject|deny/.test(o.kind || ''));
+    const pick = (opt) =>
+      this._safeSend({
+        id: m.id,
+        result: opt ? { outcome: { outcome: 'selected', optionId: opt.optionId } } : { outcome: { outcome: 'cancelled' } },
+      });
+
+    const meta = ((m.params || {}).toolCall && (m.params.toolCall._meta || {}).kiro) || ((m.params || {})._meta || {}).kiro || {};
+    const km = (m.params && m.params._meta && m.params._meta.kiro) || {};
+    const command = km.command || (km.consent && km.consent.resource) || (meta.consent && meta.consent.resource) || '';
+    const isShell = km.toolId === 'run_command' || (km.consent && km.consent.capability === 'shell');
+
+    // 命令的审批放在 terminal/create（每条命令必经那里）；这里一律放行，避免二次弹窗
+    void isShell;
+    void command;
+    pick(allow);
+  }
+
+  async _onTerminal(m) {
+    const method = m.method.slice('terminal/'.length);
+    const sess = this.sessions.get(m.params && m.params.sessionId);
+    try {
+      if (method === 'create') {
+        const command = (m.params && m.params.command) || '';
+        let decision = 'deny';
+        try {
+          decision = this.approveCommand ? await this.approveCommand(m.params.sessionId, command, sess) : 'allow';
+        } catch (e) {
+          decision = 'deny';
+        }
+        if (decision === 'deny') {
+          this._safeSend({ id: m.id, error: { code: -32000, message: '用户或策略拒绝了这条命令' } });
+          return;
+        }
+        const r = this.terminal.create(m.params, { pageTainted: sess && sess.pageTainted, decision: sess && sess._lastDecision });
+        this._safeSend({ id: m.id, result: { terminalId: r.terminalId } });
+      } else if (method === 'output') {
+        this._safeSend({ id: m.id, result: this.terminal.output(m.params.terminalId) });
+      } else if (method === 'wait_for_exit') {
+        const exit = await this.terminal.waitForExit(m.params.terminalId);
+        this._safeSend({ id: m.id, result: { exitCode: exit.exitCode, signal: exit.signal } });
+      } else if (method === 'kill') {
+        this._safeSend({ id: m.id, result: this.terminal.kill(m.params.terminalId) });
+      } else if (method === 'release') {
+        this._safeSend({ id: m.id, result: this.terminal.release(m.params.terminalId) });
+      } else {
+        this._safeSend({ id: m.id, error: { code: -32601, message: 'Method not supported: ' + m.method } });
+      }
+    } catch (e) {
+      this._safeSend({ id: m.id, error: { code: -32000, message: e.message } });
+    }
   }
 
   /** fs/read_text_file：line 从 1 开始，limit 为行数；只允许 canReadFile 放行的路径 */
@@ -373,6 +433,12 @@ class AcpManager {
   /**
    * images：[{ mimeType, data(base64) }]，放在文字前面一起发（kiro-cli 3.3 的 promptCapabilities.image 为 true）
    */
+  /** 标记某会话已注入过网页内容（命令审批时据此提高联网命令风险） */
+  markPageTainted(sessionId) {
+    const s = this.sessions.get(sessionId);
+    if (s) s.pageTainted = true;
+  }
+
   async prompt(sessionId, text, onUpdate, images = []) {
     const s = this.sessions.get(sessionId);
     if (!s) throw new AcpError('会话不存在');

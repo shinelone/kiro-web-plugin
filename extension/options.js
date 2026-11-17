@@ -155,6 +155,101 @@ async function saveReadScope() {
   }
 }
 
+// ---------- 命令执行设置（保存在后端，与文件读取权限同一个 /config） ----------
+const shellModeRadios = [...document.querySelectorAll('input[name="shellMode"]')];
+const shellNetworkEl = document.getElementById('shellNetwork');
+const shellTimeoutEl = document.getElementById('shellTimeout');
+const shellWriteDirsEl = document.getElementById('shellWriteDirs');
+const shellAllowEl = document.getElementById('shellAllow');
+const shellDenyEl = document.getElementById('shellDeny');
+const shellWarnEl = document.getElementById('shellWarn');
+const sandboxWarnEl = document.getElementById('sandboxWarn');
+const shellErrEl = document.getElementById('shellErr');
+const cmdLogEl = document.getElementById('cmdLog');
+
+function currentShellMode() {
+  const r = shellModeRadios.find((x) => x.checked);
+  return r ? r.value : 'auto';
+}
+function syncShellUi() {
+  const mode = currentShellMode();
+  shellWarnEl.classList.toggle('hidden', mode !== 'sandbox');
+}
+shellModeRadios.forEach((r) => r.addEventListener('change', syncShellUi));
+function showShellErr(msg) {
+  shellErrEl.textContent = msg || '';
+  shellErrEl.classList.toggle('hidden', !msg);
+}
+const toList = (str) => str.split(/[,\s]+/).map((x) => x.trim()).filter(Boolean);
+
+async function loadShell() {
+  try {
+    const c = await api('/config');
+    shellModeRadios.forEach((r) => (r.checked = r.value === (c.shellMode || 'auto')));
+    shellNetworkEl.checked = c.shellNetwork !== false;
+    shellTimeoutEl.value = c.shellTimeout || 60;
+    shellWriteDirsEl.value = (c.shellWriteDirs || []).join('\n');
+    shellAllowEl.value = (c.shellAllow || []).join(', ');
+    shellDenyEl.value = (c.shellDeny || []).join(', ');
+    sandboxWarnEl.classList.toggle('hidden', c.sandbox !== false);
+    readLoaded = true;
+    showShellErr('');
+  } catch (e) {
+    showShellErr('读取后端配置失败：' + e.message);
+  }
+  syncShellUi();
+  loadCmdLog();
+}
+
+async function saveShell() {
+  if (!readLoaded) return true;
+  try {
+    const c = await api('/config', {
+      method: 'PUT',
+      body: JSON.stringify({
+        shellMode: currentShellMode(),
+        shellNetwork: shellNetworkEl.checked,
+        shellTimeout: Number(shellTimeoutEl.value) || 60,
+        shellWriteDirs: shellWriteDirsEl.value.split('\n').map((l) => l.trim()).filter(Boolean),
+        shellAllow: toList(shellAllowEl.value),
+        shellDeny: toList(shellDenyEl.value),
+      }),
+    });
+    shellWriteDirsEl.value = (c.shellWriteDirs || []).join('\n');
+    showShellErr('');
+    return true;
+  } catch (e) {
+    showShellErr('命令执行设置没有保存：' + e.message);
+    return false;
+  }
+}
+
+async function loadCmdLog() {
+  try {
+    const { log } = await api('/command-log?n=50');
+    cmdLogEl.innerHTML = '';
+    for (const e of log) {
+      const row = document.createElement('div');
+      row.className = 'cmd-row';
+      const badge = document.createElement('span');
+      badge.className = 'cmd-badge ' + (e.decision || 'auto');
+      badge.textContent = { auto: '自动', confirm: '确认', always: '总是', deny: '拒绝', ban: '禁止' }[e.decision] || e.decision || '';
+      const text = document.createElement('span');
+      text.className = 'cmd-text';
+      text.textContent = e.command || '';
+      text.title = (e.command || '') + (e.why ? '\n' + e.why : '') + (e.exitCode != null ? '\n退出码 ' + e.exitCode : '');
+      const when = document.createElement('span');
+      when.className = 'cmd-when';
+      when.textContent = e.ts ? new Date(e.ts).toLocaleString() : '';
+      row.append(badge, text, when);
+      cmdLogEl.appendChild(row);
+    }
+  } catch (e) {
+    /* 后端离线：留空 */
+  }
+}
+document.getElementById('refreshLog').addEventListener('click', loadCmdLog);
+
 async function load() {
   const s = await chrome.storage.sync.get(['endpoint', 'model', 'agent', 'autoStart']);
   endpointEl.value = s.endpoint || DEFAULT_ENDPOINT;
@@ -163,6 +258,7 @@ async function load() {
   await loadModels(s.model || '');
   await loadAgents(s.agent || '');
   await loadReadScope();
+  await loadShell();
 }
 
 document.getElementById('saveBtn').addEventListener('click', async () => {
@@ -172,11 +268,12 @@ document.getElementById('saveBtn').addEventListener('click', async () => {
     agent: agentEl.value,
     autoStart: autoStartEl.checked,
   });
-  if (!(await saveReadScope())) {
+  if (!(await saveReadScope()) || !(await saveShell())) {
     savedEl.textContent = '';
     return;
   }
   savedEl.textContent = '已保存 ✓';
+  loadCmdLog();
   setTimeout(() => (savedEl.textContent = ''), 2000);
 });
 

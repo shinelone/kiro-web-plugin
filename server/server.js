@@ -21,6 +21,9 @@ const agents = require('./agents');
 const { AcpManager } = require('./acp');
 const pages = require('./pages');
 const readscope = require('./readscope');
+const shellconfig = require('./shellconfig');
+const shellpolicy = require('./shellpolicy');
+const { TerminalManager, detectSandbox } = require('./terminal');
 
 // ----- 配置 -----
 const PORT = Number(process.env.PORT || 8787);
@@ -85,11 +88,68 @@ function readBody(req, limit = 1 << 20) {
 
 // ----- 常驻 kiro-cli（ACP）-----
 // 后端启动时就拉起进程并预热一个会话，第一个问题也不用等 kiro-cli 启动
+const terminal = new TerminalManager({
+  cwd: agents.WORKSPACE_DIR,
+  log: (m) => console.log(new Date().toISOString(), m),
+});
+
+// 一次问答期间，sessionId → 这条 SSE 连接的审批器（推送 permission 事件、接收用户决定）
+const approvers = new Map();
+let permReqSeq = 0;
+const PERM_TIMEOUT_MS = 120 * 1000;
+
+/**
+ * 命令审批。acp 收到 request_permission 时调用。
+ * 返回 'allow' | 'deny'。sess 是 acp 的会话对象，用来存「本会话总是允许的命令前缀」。
+ */
+async function approveCommand(sessionId, command, sess) {
+  const cfg = shellconfig.get();
+  if (sess) sess._lastDecision = 'confirm';
+  if (cfg.shellMode === 'off') return 'deny';
+
+  const verdict = shellpolicy.classify(command, {
+    readOnlyCmds: cfg.shellAllow,
+    bannedCmds: cfg.shellDeny,
+    pageTainted: sess && sess.pageTainted,
+  });
+  if (verdict.level === 'ban') {
+    shellconfig.log({ command, decision: 'ban', why: verdict.why });
+    return 'deny';
+  }
+  // 本会话里用户点过「总是允许」的同类命令
+  const first = shellpolicy.firstWord(shellpolicy.splitSegments(command)[0] || command).base;
+  if (sess && sess._allowCmds && sess._allowCmds.has(first) && verdict.level !== 'ban') {
+    if (sess) sess._lastDecision = 'always';
+    return 'allow';
+  }
+  if (cfg.shellMode === 'sandbox') {
+    if (sess) sess._lastDecision = 'auto';
+    return 'allow';
+  }
+  if (cfg.shellMode === 'auto' && verdict.level === 'auto') {
+    if (sess) sess._lastDecision = 'auto';
+    return 'allow';
+  }
+  // 需要用户确认
+  const approver = approvers.get(sessionId);
+  if (!approver) return 'deny'; // SSE 已断开，无人可问
+  const reqId = 'perm' + ++permReqSeq;
+  const decision = await approver.ask({ reqId, command, cwd: terminal.baseCwd, why: verdict.why, net: verdict.net, first });
+  if (decision === 'always' && sess) {
+    sess._allowCmds = sess._allowCmds || new Set();
+    sess._allowCmds.add(first);
+  }
+  if (sess) sess._lastDecision = decision === 'always' ? 'always' : decision === 'allow' ? 'confirm' : 'deny';
+  return decision === 'deny' ? 'deny' : 'allow';
+}
+
 const acp = new AcpManager({
   kiroBin: KIRO_BIN,
   cwd: agents.WORKSPACE_DIR,
   canReadFile: readscope.canReadFile, // 读文件范围由设置页的「文件读取权限」决定，默认只读页面文件
   denyMessage: readscope.denyMessage,
+  terminal,
+  approveCommand,
   log: (m) => console.log(new Date().toISOString(), m),
 });
 const getModes = () => acp.listModes();
@@ -323,9 +383,15 @@ async function handleAsk(req, res) {
   // 注意用 res 的 close：req 的 close 在请求体读完时就会触发。
   let activeSession = null;
   let closed = false;
+  const pendingPerms = new Map(); // reqId → resolve
   res.on('close', () => {
     closed = true;
-    if (activeSession) acp.cancel(activeSession);
+    if (activeSession) {
+      acp.cancel(activeSession);
+      approvers.delete(activeSession);
+    }
+    for (const [, resolve] of pendingPerms) resolve('deny'); // 断开视为拒绝
+    pendingPerms.clear();
   });
 
   const t0 = Date.now();
@@ -337,6 +403,37 @@ async function handleAsk(req, res) {
     }
     sseSend(res, 'session', { sessionId: opened.sessionId });
 
+    // 注册本会话的命令审批器：把确认请求通过 SSE 推给插件，等 /permission 回传决定
+    approvers.set(opened.sessionId, {
+      ask: ({ reqId, command, cwd, why, net, first }) =>
+        new Promise((resolve) => {
+          if (closed) {
+            resolve('deny');
+            return;
+          }
+          pendingPerms.set(reqId, resolve);
+          sseSend(res, 'permission', { reqId, command, cwd, why, net, first });
+          const timer = setTimeout(() => {
+            if (pendingPerms.has(reqId)) {
+              pendingPerms.delete(reqId);
+              sseSend(res, 'permission_timeout', { reqId });
+              resolve('deny');
+            }
+          }, PERM_TIMEOUT_MS);
+          timer.unref && timer.unref();
+        }),
+      resolve: (reqId, decision) => {
+        const r = pendingPerms.get(reqId);
+        if (r) {
+          pendingPerms.delete(reqId);
+          r(decision);
+          return true;
+        }
+        return false;
+      },
+    });
+    res._perms = pendingPerms;
+
     // V3 引擎不使用 agent 文件里的 prompt：新会话的第一条消息前面带上插件 agent 的提示词，
     // 之后的追问留在会话历史里，不再重复发送。
     let text = prompt;
@@ -345,6 +442,7 @@ async function handleAsk(req, res) {
       const canRead = managed ? (managed.tools || []).includes('read') : true;
       const built = pages.buildPagePrompt(page, prompt, { canRead });
       text = built.prompt;
+      acp.markPageTainted(opened.sessionId); // 本会话读过网页：命令审批时提高联网命令风险
       sseSend(res, 'page', { mode: built.mode, chars: page.text.length });
     }
     if (opened.isNew && managed && managed.prompt && managed.prompt.trim()) {
@@ -375,11 +473,31 @@ async function handleAsk(req, res) {
     if (images.length) message += '\n（带了图片：如果当前模型不支持图片，请在输入框下方换一个模型再试）';
     if (!closed) sseSend(res, 'error', { message });
   } finally {
+    if (activeSession) approvers.delete(activeSession);
     if (!closed) {
       res.write('event: end\ndata: {}\n\n');
       res.end();
     }
   }
+}
+
+/** 处理 /permission：插件回传命令确认结果 { sessionId, reqId, decision } */
+async function handlePermission(req, res) {
+  let body;
+  try {
+    body = JSON.parse((await readBody(req)) || '{}');
+  } catch (e) {
+    sendJson(res, 400, { error: '无效的请求体' });
+    return;
+  }
+  const decision = String(body.decision || '');
+  if (!['allow', 'always', 'deny'].includes(decision)) {
+    sendJson(res, 400, { error: '无效的 decision' });
+    return;
+  }
+  const approver = body.sessionId && approvers.get(String(body.sessionId));
+  const ok = approver && approver.resolve(String(body.reqId || ''), decision);
+  sendJson(res, ok ? 200 : 404, ok ? { ok: true } : { error: '该确认请求已失效' });
 }
 
 async function handleAgents(req, res, url) {
@@ -430,7 +548,7 @@ const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://localhost:${PORT}`);
 
   if (req.method === 'GET' && url.pathname === '/health') {
-    sendJson(res, 200, { ok: true, kiroBin: KIRO_BIN, features: ['models', 'agents', 'acp', 'page', 'image', 'config'], acp: acp.status() });
+    sendJson(res, 200, { ok: true, kiroBin: KIRO_BIN, features: ['models', 'agents', 'acp', 'page', 'image', 'config', 'shell'], acp: acp.status() });
     return;
   }
 
@@ -443,26 +561,38 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // 文件读取权限：GET 读取，PUT 修改（设置页使用）
+  // 设置页配置：文件读取权限 + 命令执行。GET 读取，PUT 修改
   if (url.pathname === '/config') {
     if (req.method === 'GET') {
-      sendJson(res, 200, readscope.get());
+      sendJson(res, 200, { ...readscope.get(), ...shellconfig.get(), sandbox: detectSandbox() });
       return;
     }
     if (req.method === 'PUT') {
       try {
-        const r = readscope.save(JSON.parse((await readBody(req)) || '{}'));
-        if (r.error) sendJson(res, 400, { error: r.error });
-        else {
-          console.log(new Date().toISOString(), '文件读取权限已修改为', JSON.stringify(r.config));
-          sendJson(res, 200, readscope.get());
-        }
+        const body = JSON.parse((await readBody(req)) || '{}');
+        const r1 = readscope.save(body);
+        if (r1.error) return sendJson(res, 400, { error: r1.error });
+        const r2 = shellconfig.save(body);
+        if (r2.error) return sendJson(res, 400, { error: r2.error });
+        console.log(new Date().toISOString(), '设置已更新', JSON.stringify({ ...r1.config, ...r2.config }));
+        sendJson(res, 200, { ...readscope.get(), ...shellconfig.get(), sandbox: detectSandbox() });
       } catch (e) {
         sendJson(res, 400, { error: '无效的请求体: ' + e.message });
       }
       return;
     }
     sendJson(res, 405, { error: 'method not allowed' });
+    return;
+  }
+
+  // 命令执行审计日志
+  if (req.method === 'GET' && url.pathname === '/command-log') {
+    sendJson(res, 200, { log: shellconfig.recentLog(Number(url.searchParams.get('n')) || 50) });
+    return;
+  }
+
+  if (req.method === 'POST' && url.pathname === '/permission') {
+    await handlePermission(req, res);
     return;
   }
 
@@ -486,6 +616,7 @@ acp.start().catch((e) => console.error('kiro-cli acp 启动失败:', e.message))
 
 for (const sig of ['SIGTERM', 'SIGINT']) {
   process.on(sig, () => {
+    terminal.stopAll();
     acp.stop();
     process.exit(0);
   });

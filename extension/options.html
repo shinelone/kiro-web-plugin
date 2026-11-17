@@ -435,8 +435,63 @@
         font-family: "SF Mono", ui-monospace, Menlo, monospace;
         font-size: 12px;
       }
-      #readErr {
+      #readErr,
+      #shellErr {
         color: #d93025;
+      }
+      #shellSection label.check {
+        margin-top: 10px;
+      }
+      #shellWriteDirs {
+        font-family: "SF Mono", ui-monospace, Menlo, monospace;
+        font-size: 12px;
+      }
+      .cmd-log {
+        margin-top: 8px;
+        border: 1px solid var(--border-soft);
+        border-radius: 8px;
+        max-height: 240px;
+        overflow-y: auto;
+        font-size: 12px;
+      }
+      .cmd-log:empty::after {
+        content: "暂无记录";
+        display: block;
+        padding: 12px;
+        color: var(--text-faint);
+      }
+      .cmd-row {
+        display: flex;
+        gap: 8px;
+        align-items: baseline;
+        padding: 6px 10px;
+        border-bottom: 1px solid var(--border-soft);
+      }
+      .cmd-row:last-child {
+        border-bottom: 0;
+      }
+      .cmd-badge {
+        flex-shrink: 0;
+        font-size: 10.5px;
+        padding: 1px 6px;
+        border-radius: 999px;
+      }
+      .cmd-badge.auto { background: #e6f4ea; color: #137333; }
+      .cmd-badge.confirm, .cmd-badge.always { background: #e8f0fe; color: #1557b0; }
+      .cmd-badge.ban, .cmd-badge.deny { background: #fce8e6; color: #c5221f; }
+      .cmd-text {
+        flex: 1;
+        min-width: 0;
+        font-family: "SF Mono", ui-monospace, Menlo, monospace;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        color: var(--text);
+      }
+      .cmd-when {
+        flex-shrink: 0;
+        color: var(--text-faint);
+        font-size: 11px;
       }
       .hint.warn {
         color: #8a5300;
@@ -453,6 +508,7 @@
       button.ghost.danger:hover {
         background: #fce8e6;
         border-color: rgba(217, 48, 37, 0.5);
+        color: #b31412; /* 浅红底上加深，满足对比度 */
       }
       .form-msg {
         font-size: 12.5px;
@@ -528,6 +584,46 @@
           放宽后，网页里藏着的恶意指令可能诱导 Kiro 读取本机文件，再用联网工具发出去。只在信任当前页面时使用，用完建议改回「只读页面文件」。
         </div>
         <div class="hint hidden" id="readErr"></div>
+      </div>
+
+      <div class="section" id="shellSection">
+        <div class="section-title">命令执行</div>
+        <div class="hint">
+          控制带「执行命令」工具的 agent 能否在本机运行命令（预置的「本机助手」就带这个工具）。命令由后端审核、在沙箱里运行、超时结束并记录。
+        </div>
+        <label class="check"><input type="radio" name="shellMode" value="off" /><span>关闭（任何命令都拒绝）</span></label>
+        <label class="check"><input type="radio" name="shellMode" value="confirm" /><span>每条命令都要我确认</span></label>
+        <label class="check"><input type="radio" name="shellMode" value="auto" checked /><span>只读命令自动运行，其它要我确认（推荐）</span></label>
+        <label class="check"><input type="radio" name="shellMode" value="sandbox" /><span>沙箱内全部自动运行（危险命令仍拒绝）</span></label>
+
+        <div class="hint warn hidden" id="shellWarn">
+          「沙箱内全部自动」不再逐条确认，请只在信任当前任务时使用。危险命令（sudo、删除家目录、读密钥等）始终被拒绝。
+        </div>
+        <div class="hint warn hidden" id="sandboxWarn">
+          当前系统无法启用沙箱（sandbox-exec 不可用），命令会直接在本机运行，只有分级和确认保护。建议用「每条都确认」。
+        </div>
+
+        <label class="check"><input type="checkbox" id="shellNetwork" checked /><span>允许命令联网（关闭后 curl、git pull 等无法联网）</span></label>
+
+        <label for="shellTimeout">单条命令超时（秒）</label>
+        <input id="shellTimeout" type="number" min="5" max="600" step="5" value="60" />
+
+        <label for="shellWriteDirs">额外可写目录</label>
+        <textarea id="shellWriteDirs" rows="2" placeholder="每行一个绝对路径；默认只能写工作目录和临时目录" spellcheck="false"></textarea>
+
+        <div class="inline">
+          <label for="shellAllow" style="margin:0">自动放行的命令（白名单）</label>
+        </div>
+        <input id="shellAllow" type="text" placeholder="命令名，逗号分隔，例如 make, cargo" />
+        <label for="shellDeny">额外禁止的命令（黑名单）</label>
+        <input id="shellDeny" type="text" placeholder="命令名，逗号分隔，例如 ssh, scp" />
+
+        <div class="inline" style="margin-top:14px">
+          <span class="section-title" style="margin:0;border:0;padding:0">最近执行的命令</span>
+          <button type="button" class="ghost" id="refreshLog">刷新</button>
+        </div>
+        <div class="cmd-log" id="cmdLog"></div>
+        <div class="hint hidden" id="shellErr"></div>
       </div>
 
       <div class="row">
