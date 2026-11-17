@@ -30,6 +30,16 @@ const els = {
   backendBar: document.getElementById('backendBar'),
   backendMsg: document.getElementById('backendMsg'),
   startBackendBtn: document.getElementById('startBackendBtn'),
+  chatBody: document.getElementById('chatBody'),
+  selAsk: document.getElementById('selAsk'),
+  threadMap: document.getElementById('threadMap'),
+  tmTree: document.getElementById('tmTree'),
+  mapBtn: document.getElementById('mapBtn'),
+  mapClose: document.getElementById('mapClose'),
+  quoteBar: document.getElementById('quoteBar'),
+  quoteLabel: document.getElementById('quoteLabel'),
+  quoteText: document.getElementById('quoteText'),
+  quoteClear: document.getElementById('quoteClear'),
 };
 
 let settings = { endpoint: DEFAULT_ENDPOINT, model: '', agent: '', autoStart: true };
@@ -394,10 +404,16 @@ function showEmptyHint() {
   }
 }
 
-function addMessage(role, text = '', steps = null, meta = null) {
+/**
+ * 添加一条消息。opts.id：消息 id（恢复对话时沿用，否则新建）；
+ * opts.quote：用户追问引用的内容 { msgId?, text, start?, end?, source: 'answer' | 'page' }
+ */
+function addMessage(role, text = '', steps = null, meta = null, opts = {}) {
   clearEmptyHint();
   const wrap = document.createElement('div');
   wrap.className = 'msg ' + role;
+  wrap.dataset.id = opts.id || newMsgId();
+  if (opts.quote) wrap._quote = opts.quote;
   const roleEl = document.createElement('div');
   roleEl.className = 'role';
   const roleName = document.createElement('span');
@@ -429,6 +445,18 @@ function addMessage(role, text = '', steps = null, meta = null) {
     if (text) body.innerHTML = renderMarkdown(text);
   } else {
     body.textContent = text; // 用户/错误消息保持纯文本
+  }
+  if (role === 'user' && opts.quote) {
+    // 追问气泡顶部显示引用摘要；点击跳回被引用的原文
+    const q = document.createElement('button');
+    q.type = 'button';
+    q.className = 'msg-quote';
+    q.textContent = opts.quote.text.replace(/\s+/g, ' ');
+    q.title = opts.quote.source === 'page' ? '引用自网页' : '跳到被引用的回答';
+    if (opts.quote.source !== 'page' && opts.quote.msgId) {
+      q.addEventListener('click', () => jumpToAnchor(opts.quote.msgId, wrap.dataset.id));
+    }
+    wrap.appendChild(q);
   }
   wrap.appendChild(body);
   els.messages.appendChild(wrap);
@@ -950,13 +978,16 @@ async function ensureFullPage() {
   return pageContext;
 }
 
-async function ask(question) {
+async function ask(question, quote = null) {
   // 发送前确保已抓取页面（若开启上下文且尚未抓取）
   if (els.useContext.checked && !pageContext) {
     await capturePage();
   }
 
-  addMessage('user', question);
+  addMessage('user', question, null, null, { quote });
+  refreshMap();
+  // 实际发给 Kiro 的内容：追问时带上被引用的那段文字（界面上只显示用户的问题）
+  const promptText = quote ? quotedPrompt(question, quote) : question;
   const answerEl = addMessage('assistant', '');
   answerEl.classList.add('cursor');
   lastQuestion = question; // 记录用于「重新生成」
@@ -979,10 +1010,10 @@ async function ask(question) {
   try {
     if (!needInject) {
       // 不注入页面：直接发问题（含关闭上下文、或已注入过本页）
-      await sendPrompt(question, answerEl);
+      await sendPrompt(promptText, answerEl);
     } else {
       // 首次涉及该页面：带上页面全文，后端决定内联还是存成文件按需读取
-      await sendPrompt(question, answerEl, pagePayload(c));
+      await sendPrompt(promptText, answerEl, pagePayload(c));
       injectedUrl = c.url;
     }
   } catch (e) {
@@ -1005,6 +1036,9 @@ async function ask(question) {
     els.input.focus();
     // 为已完成的助手回答添加操作条（复制 / 重新生成）
     maybeAddAnswerActions(answerEl);
+    // 追问原文高亮、关系图
+    applyAnchors();
+    refreshMap();
     // 持久化当前标签页的对话
     saveConversation();
   }
@@ -1039,14 +1073,18 @@ function maybeAddAnswerActions(answerEl) {
   regenBtn.innerHTML = actionIcon('regen') + '<span>重新生成</span>';
   regenBtn.title = '重新生成';
   regenBtn.addEventListener('click', () => {
-    if (currentController || !lastQuestion) return;
-    const q = lastQuestion;
-    // 删除这条助手回答，以及它前面对应的那条用户提问
+    if (currentController) return;
+    // 用这条回答对应的那次提问（含追问引用）重新生成
     const prev = wrap.previousElementSibling;
+    const isUser = prev && prev.classList.contains('user');
+    const q = isUser ? prev.querySelector('.body').textContent : lastQuestion;
+    const quote = isUser ? prev._quote || null : null;
+    if (!q) return;
+    // 删除这条助手回答，以及它前面对应的那条用户提问
     wrap.remove();
-    if (prev && prev.classList.contains('user')) prev.remove();
+    if (isUser) prev.remove();
     // 在原位重新提问生成
-    ask(q);
+    ask(q, quote);
   });
 
   bar.appendChild(copyBtn);
@@ -1159,7 +1197,9 @@ els.composer.addEventListener('submit', (e) => {
   if (!text || currentController) return;
   els.input.value = '';
   autosize();
-  ask(text);
+  const quote = pendingQuote;
+  setQuote(null);
+  ask(text, quote);
 });
 
 // 输入法（IME）组词状态：组词期间的回车只是确认候选词，不应触发发送
@@ -1201,7 +1241,9 @@ function startNewConversation() {
   injectedUrl = null;
   lastQuestion = null;
   convAgent = settings.agent || '';
+  setQuote(null);
   showEmptyHint();
+  refreshMap();
   saveConversation(); // 同步清空该标签页的持久化对话
 }
 
@@ -1290,7 +1332,9 @@ els.agentSelect.addEventListener('change', () => {
 els.quickActions.querySelectorAll('button').forEach((btn) => {
   btn.addEventListener('click', () => {
     if (currentController) return;
-    ask(btn.dataset.q);
+    const quote = pendingQuote;
+    setQuote(null);
+    ask(btn.dataset.q, quote);
   });
 });
 
@@ -1485,7 +1529,7 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   }
 });
 
-// ---------- 右键「解释选中内容」处理 ----------
+// ---------- 右键「追问」处理（网页上选中的文字） ----------
 let lastHandledActionTs = 0;
 
 /** 把一个 pendingAction 转成一次提问 */
@@ -1493,15 +1537,11 @@ function runPendingAction(action) {
   if (FULL_MODE) return; // 右键请求只由侧边栏处理，避免两边重复提问
   if (!action || !action.ts || action.ts === lastHandledActionTs) return;
   lastHandledActionTs = action.ts;
-  if (action.type === 'explain') {
-    const text = (action.text || '').trim();
-    if (!text) return;
-    if (currentController) return; // 正在生成时忽略，避免打断
-    const q =
-      '请解释下面这段我从网页中选中的内容（用中文，必要时给出背景和通俗说明）：\n\n「' +
-      text +
-      '」';
-    ask(q);
+  const text = (action.text || '').trim();
+  if (!text) return;
+  if (action.type === 'followup' || action.type === 'explain') {
+    // 网页上选中文字后右键「追问」：把这段文字放进引用条，等用户输入问题
+    setQuote({ source: 'page', text: text.slice(0, 4000), url: action.url || '' });
   }
 }
 
@@ -1534,7 +1574,8 @@ function serializeConversation() {
     // 助手消息存原始 markdown，其它存纯文本
     const text =
       role === 'assistant' ? body.dataset.raw || '' : body.textContent || '';
-    const m = { role, text };
+    const m = { role, text, id: wrap.dataset.id };
+    if (wrap._quote) m.quote = wrap._quote;
     if (body._act) {
       const steps = stepsForStorage(body);
       if (steps.length) m.steps = steps;
@@ -1553,7 +1594,7 @@ function renderConversation(state) {
     showEmptyHint();
   } else {
     for (const m of msgs) {
-      const body = addMessage(m.role, m.text, m.steps, m.meta);
+      const body = addMessage(m.role, m.text, m.steps, m.meta, { id: m.id, quote: m.quote });
       // 为已完成的助手回答补上操作条
       if (m.role === 'assistant' && (m.text || '').trim()) {
         maybeAddAnswerActions(body);
@@ -1566,6 +1607,8 @@ function renderConversation(state) {
   lastPageUrl = (state && state.lastPageUrl) || null;
   // 旧版本保存的对话没有 convAgent，视为用当前 agent 开启
   convAgent = state && typeof state.convAgent === 'string' ? state.convAgent : settings.agent || '';
+  applyAnchors();
+  refreshMap();
 }
 
 /** 保存当前标签页的对话 */
@@ -1630,6 +1673,496 @@ async function switchToTab(tabId) {
   // 抓取新标签页的页面内容（供上下文使用）
   if (els.useContext.checked) capturePage();
 }
+
+// ---------- 追问：选中回答里的文字后追问 ----------
+let msgSeq = 0;
+function newMsgId() {
+  return 'm' + Date.now().toString(36) + (msgSeq++).toString(36);
+}
+
+/** 当前引用条里的内容（发送时随问题一起带上） */
+let pendingQuote = null;
+const QUOTE_PROMPT_MAX = 4000; // 发给 Kiro 的引用最长字数
+
+/** 追问时实际发给 Kiro 的文字：引用 + 问题 */
+function quotedPrompt(question, quote) {
+  const text = quote.text.length > QUOTE_PROMPT_MAX ? quote.text.slice(0, QUOTE_PROMPT_MAX) + '…' : quote.text;
+  const block = text
+    .split('\n')
+    .map((l) => '> ' + l)
+    .join('\n');
+  const lead = quote.source === 'page' ? '关于我在页面里选中的这段内容：' : '针对你前面回答中的这段内容追问：';
+  return lead + '\n\n' + block + '\n\n我的问题：' + question;
+}
+
+/** 设置 / 清除引用条 */
+function setQuote(quote) {
+  pendingQuote = quote;
+  els.quoteBar.classList.toggle('hidden', !quote);
+  if (!quote) {
+    refreshMap();
+    return;
+  }
+  els.quoteLabel.textContent = quote.source === 'page' ? '引用网页' : '追问';
+  els.quoteText.textContent = quote.text.replace(/\s+/g, ' ');
+  els.quoteText.title = quote.text;
+  els.input.focus();
+  refreshMap();
+}
+els.quoteClear.addEventListener('click', () => {
+  setQuote(null);
+  els.input.focus();
+});
+els.input.addEventListener('keydown', (e) => {
+  // 输入框为空时按 Esc / 退格清掉引用
+  if (pendingQuote && !els.input.value && (e.key === 'Escape' || e.key === 'Backspace')) {
+    setQuote(null);
+  }
+});
+
+/** 选区落在哪条回答的正文里；不在同一条回答内返回 null */
+function selectionInAnswer() {
+  const sel = window.getSelection();
+  if (!sel || sel.isCollapsed || !sel.rangeCount) return null;
+  const range = sel.getRangeAt(0);
+  const startEl = range.startContainer.nodeType === 1 ? range.startContainer : range.startContainer.parentElement;
+  const endEl = range.endContainer.nodeType === 1 ? range.endContainer : range.endContainer.parentElement;
+  const body = startEl && startEl.closest('.msg.assistant .body');
+  if (!body || !endEl || endEl.closest('.msg.assistant .body') !== body) return null;
+  const text = sel.toString().trim();
+  if (text.length < 2) return null;
+  // 在正文文本里的位置（按文本节点拼接计算），恢复对话后用来重新高亮
+  const pre = document.createRange();
+  pre.setStart(body, 0);
+  pre.setEnd(range.startContainer, range.startOffset);
+  const start = pre.toString().length;
+  const end = start + range.toString().length;
+  return { body, range, text, start, end, msgId: body.parentElement.dataset.id };
+}
+
+let selInfo = null;
+function hideSelAsk() {
+  selInfo = null;
+  els.selAsk.classList.add('hidden');
+}
+function updateSelAsk() {
+  const info = selectionInAnswer();
+  if (!info || currentController) {
+    hideSelAsk();
+    return;
+  }
+  selInfo = info;
+  const r = info.range.getBoundingClientRect();
+  const box = els.chatBody.getBoundingClientRect();
+  const btn = els.selAsk;
+  btn.classList.remove('hidden');
+  const w = btn.offsetWidth;
+  const h = btn.offsetHeight;
+  // 放在选区上方居中；上方放不下就放下方
+  let left = r.left + r.width / 2 - w / 2 - box.left;
+  left = Math.max(6, Math.min(left, box.width - w - 6));
+  let top = r.top - box.top - h - 8;
+  if (top < 4) top = r.bottom - box.top + 8;
+  btn.style.left = left + 'px';
+  btn.style.top = top + 'px';
+}
+els.messages.addEventListener('mouseup', () => setTimeout(updateSelAsk, 0));
+els.messages.addEventListener('keyup', (e) => {
+  if (e.shiftKey || e.key === 'Shift') updateSelAsk();
+});
+els.messages.addEventListener('scroll', hideSelAsk, { passive: true });
+document.addEventListener('selectionchange', () => {
+  const sel = window.getSelection();
+  if (!sel || sel.isCollapsed) hideSelAsk();
+});
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') hideSelAsk();
+});
+// 按下按钮时不要让选区消失
+els.selAsk.addEventListener('mousedown', (e) => e.preventDefault());
+els.selAsk.addEventListener('click', () => {
+  if (!selInfo) return;
+  startFollowUp(selInfo);
+});
+
+/** 开始一次追问：把选中的文字放进引用条，并打开关系图 */
+function startFollowUp(info) {
+  setQuote({
+    source: 'answer',
+    msgId: info.msgId,
+    text: info.text.slice(0, QUOTE_PROMPT_MAX),
+    start: info.start,
+    end: info.end,
+  });
+  hideSelAsk();
+  window.getSelection().removeAllRanges();
+  setMapOpen(true);
+}
+
+// 侧边栏 / 全屏页里右键「追问」：由 background 转发过来，这里用当前选区
+chrome.runtime.onMessage.addListener((msg) => {
+  if (!msg || msg.type !== 'kiro-followup-selection') return;
+  if (!document.hasFocus()) return; // 侧边栏和全屏页都会收到，只由有焦点的那个处理
+  const info = selectionInAnswer();
+  if (info) startFollowUp(info);
+  else if (msg.text) setQuote({ source: 'answer', text: String(msg.text).slice(0, QUOTE_PROMPT_MAX) });
+});
+
+// ---------- 被追问的原文高亮 ----------
+/** 正文里所有文本节点及其起始位置 */
+function textNodesOf(body) {
+  const list = [];
+  const walker = document.createTreeWalker(body, NodeFilter.SHOW_TEXT);
+  let pos = 0;
+  let n;
+  while ((n = walker.nextNode())) {
+    list.push({ node: n, start: pos });
+    pos += n.nodeValue.length;
+  }
+  return { list, length: pos };
+}
+
+/** 把 [start, end) 范围内的文字逐个文本节点包进 <mark> */
+function wrapRange(body, start, end, toId) {
+  const { list } = textNodesOf(body);
+  let first = null;
+  for (const { node, start: ns } of list) {
+    const ne = ns + node.nodeValue.length;
+    if (ne <= start || ns >= end) continue;
+    if (node.parentElement.closest('.md-code-head')) continue; // 代码块的「复制」按钮
+    const a = Math.max(start, ns) - ns;
+    const b = Math.min(end, ne) - ns;
+    if (b <= a || !node.nodeValue.slice(a, b).trim()) continue;
+    let target = node;
+    if (a > 0) target = target.splitText(a);
+    if (b - a < target.nodeValue.length) target.splitText(b - a);
+    const mark = document.createElement('mark');
+    mark.className = 'quote-anchor';
+    mark.dataset.to = toId;
+    mark.title = '查看对这段的追问';
+    target.parentNode.insertBefore(mark, target);
+    mark.appendChild(target);
+    if (!first) first = mark;
+  }
+  return first;
+}
+
+/** 找不到记录的位置时按文字查找（只用第一行，跨段落的选区文字和正文拼接后不一样） */
+function findQuote(body, text) {
+  const { list } = textNodesOf(body);
+  const full = list.map((x) => x.node.nodeValue).join('');
+  const line = text.split('\n').map((l) => l.trim()).filter(Boolean).sort((a, b) => b.length - a.length)[0] || '';
+  if (!line) return null;
+  const i = full.indexOf(line);
+  return i < 0 ? null : { start: i, end: i + line.length };
+}
+
+/** 给所有被追问过的回答加高亮（幂等：先清掉旧的再加） */
+function applyAnchors() {
+  els.messages.querySelectorAll('mark.quote-anchor').forEach((m) => {
+    const parent = m.parentNode;
+    while (m.firstChild) parent.insertBefore(m.firstChild, m);
+    m.remove();
+    parent.normalize();
+  });
+  els.messages.querySelectorAll('.msg.user').forEach((u) => {
+    const q = u._quote;
+    if (!q || q.source === 'page' || !q.msgId) return;
+    const wrap = els.messages.querySelector('.msg.assistant[data-id="' + CSS.escape(q.msgId) + '"]');
+    const body = wrap && wrap.querySelector('.body');
+    if (!body) return;
+    let pos = null;
+    if (Number.isInteger(q.start) && Number.isInteger(q.end) && q.end > q.start) {
+      const { list } = textNodesOf(body);
+      const full = list.map((x) => x.node.nodeValue).join('');
+      const slice = full.slice(q.start, q.end).replace(/\s+/g, '');
+      const want = q.text.replace(/\s+/g, '');
+      if (slice && (want.startsWith(slice.slice(0, 20)) || slice.startsWith(want.slice(0, 20)))) pos = q;
+    }
+    if (!pos) pos = findQuote(body, q.text);
+    if (pos) wrapRange(body, pos.start, pos.end, u.dataset.id);
+  });
+}
+
+// 点高亮的原文：跳到对应的追问
+els.messages.addEventListener('click', (e) => {
+  const mark = e.target.closest && e.target.closest('mark.quote-anchor');
+  if (!mark) return;
+  if (!window.getSelection().isCollapsed) return; // 正在选字
+  scrollToMsg(mark.dataset.to);
+  if (mapOpen) {
+    currentLockUntil = Date.now() + 1200;
+    currentTurnId = null;
+    setCurrentTurn(mark.dataset.to);
+  }
+});
+
+/** 滚动到某条消息并闪一下 */
+function scrollToMsg(id) {
+  const el = els.messages.querySelector('.msg[data-id="' + CSS.escape(id) + '"]');
+  if (!el) return;
+  el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  el.classList.remove('flash');
+  void el.offsetWidth;
+  el.classList.add('flash');
+}
+
+/** 从追问跳回被引用的原文 */
+function jumpToAnchor(answerId, followId) {
+  const mark = els.messages.querySelector('mark.quote-anchor[data-to="' + CSS.escape(followId) + '"]');
+  if (mark) {
+    mark.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    mark.classList.remove('flash');
+    void mark.offsetWidth;
+    mark.classList.add('flash');
+  } else {
+    scrollToMsg(answerId);
+  }
+}
+
+// ---------- 追问关系图 ----------
+const collapsedTurns = new Set(); // 折叠起来的节点（本页内存，不持久化）
+let mapOpen = FULL_MODE && localStorage.getItem('mapOpen') === '1';
+let currentTurnId = null;
+let currentLockUntil = 0; // 点了节点后短时间内不按滚动位置改写高亮
+let mapRaf = 0;
+
+function setMapOpen(open) {
+  mapOpen = !!open;
+  document.body.classList.toggle('map-open', mapOpen);
+  els.mapBtn.setAttribute('aria-pressed', mapOpen ? 'true' : 'false');
+  els.mapBtn.classList.toggle('active', mapOpen);
+  if (FULL_MODE) localStorage.setItem('mapOpen', mapOpen ? '1' : '0');
+  if (mapOpen) refreshMap();
+}
+els.mapBtn.addEventListener('click', () => setMapOpen(!mapOpen));
+els.mapClose.addEventListener('click', () => setMapOpen(false));
+setMapOpen(mapOpen);
+
+/**
+ * 从对话里整理出「轮次」：一次提问 + 它的回答。
+ * 引用了某条回答的追问挂在那条回答所在的轮次下面，其它的作为主线。
+ */
+function buildTurns() {
+  const turns = [];
+  const byAnswer = new Map();
+  let cur = null;
+  els.messages.querySelectorAll('.msg').forEach((wrap) => {
+    if (wrap.classList.contains('user')) {
+      cur = {
+        id: wrap.dataset.id,
+        q: wrap.querySelector('.body').textContent,
+        quote: wrap._quote || null,
+        answerId: null,
+        error: false,
+        children: [],
+      };
+      turns.push(cur);
+    } else if (cur && !cur.answerId) {
+      cur.answerId = wrap.dataset.id;
+      cur.error = wrap.classList.contains('error');
+      byAnswer.set(wrap.dataset.id, cur);
+    }
+  });
+  const roots = [];
+  for (const t of turns) {
+    const parent = t.quote && t.quote.msgId ? byAnswer.get(t.quote.msgId) : null;
+    if (parent && parent !== t) parent.children.push(t);
+    else roots.push(t);
+  }
+  return { roots, byAnswer };
+}
+
+function countDesc(t) {
+  return t.children.reduce((n, c) => n + 1 + countDesc(c), 0);
+}
+
+function refreshMap() {
+  if (!mapOpen) return;
+  if (mapRaf) return;
+  mapRaf = requestAnimationFrame(() => {
+    mapRaf = 0;
+    renderMap();
+  });
+}
+
+function renderMap() {
+  const { roots, byAnswer } = buildTurns();
+  const tree = els.tmTree;
+  tree.innerHTML = '';
+  if (!roots.length && !pendingQuote) {
+    tree.innerHTML =
+      '<p class="tm-empty">还没有提问。选中回答里的一段文字，点「追问」，追问关系会显示在这里。</p>';
+    return;
+  }
+  const ul = document.createElement('ul');
+  ul.className = 'tm-list';
+  for (const t of roots) ul.appendChild(renderTurn(t));
+  // 正在准备的追问：在被引用的回答下面显示一个虚线节点
+  if (pendingQuote && pendingQuote.source === 'answer' && pendingQuote.msgId && byAnswer.get(pendingQuote.msgId)) {
+    const parentLi = ul.querySelector('li[data-turn="' + CSS.escape(byAnswer.get(pendingQuote.msgId).id) + '"]');
+    if (parentLi) {
+      let sub = parentLi.querySelector(':scope > ul');
+      if (!sub) {
+        sub = document.createElement('ul');
+        sub.className = 'tm-list';
+        parentLi.appendChild(sub);
+      }
+      sub.hidden = false;
+      sub.appendChild(pendingNode(pendingQuote));
+    }
+  } else if (pendingQuote) {
+    ul.appendChild(pendingNode(pendingQuote));
+  }
+  tree.appendChild(ul);
+  if (Date.now() < currentLockUntil && currentTurnId) setCurrentTurn(currentTurnId);
+  else markCurrentTurn(true);
+}
+
+function pendingNode(q) {
+  const li = document.createElement('li');
+  li.className = 'tm-item tm-pending';
+  li.innerHTML = '<div class="tm-node"><span class="tm-quote"></span><span class="tm-q">输入问题后发送…</span></div>';
+  li.querySelector('.tm-quote').textContent = q.text.replace(/\s+/g, ' ');
+  return li;
+}
+
+function renderTurn(t) {
+  const li = document.createElement('li');
+  li.className = 'tm-item';
+  li.dataset.turn = t.id;
+  li.setAttribute('role', 'treeitem');
+  const row = document.createElement('div');
+  row.className = 'tm-row';
+
+  const hasKids = t.children.length > 0;
+  const collapsed = hasKids && collapsedTurns.has(t.id);
+  if (hasKids) {
+    li.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+    const tog = document.createElement('button');
+    tog.type = 'button';
+    tog.className = 'tm-toggle';
+    tog.title = collapsed ? '展开追问' : '折叠追问';
+    tog.setAttribute('aria-label', tog.title);
+    tog.innerHTML =
+      '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M9 6l6 6-6 6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+    tog.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (collapsedTurns.has(t.id)) collapsedTurns.delete(t.id);
+      else collapsedTurns.add(t.id);
+      renderMap();
+    });
+    row.appendChild(tog);
+  } else {
+    const dot = document.createElement('span');
+    dot.className = 'tm-dot';
+    dot.setAttribute('aria-hidden', 'true');
+    row.appendChild(dot);
+  }
+
+  const node = document.createElement('button');
+  node.type = 'button';
+  node.className = 'tm-node' + (t.error ? ' tm-error' : '') + (!t.answerId ? ' tm-waiting' : '');
+  if (t.quote) {
+    const qq = document.createElement('span');
+    qq.className = 'tm-quote' + (t.quote.source === 'page' ? ' tm-quote-page' : '');
+    qq.textContent = t.quote.text.replace(/\s+/g, ' ');
+    node.appendChild(qq);
+  }
+  const qt = document.createElement('span');
+  qt.className = 'tm-q';
+  qt.textContent = t.q;
+  node.appendChild(qt);
+  if (collapsed) {
+    const more = document.createElement('span');
+    more.className = 'tm-more';
+    more.textContent = countDesc(t) + ' 条追问已折叠';
+    node.appendChild(more);
+  }
+  node.title = t.q;
+  node.addEventListener('click', () => {
+    scrollToMsg(t.id);
+    // 点哪个节点就高亮哪个；平滑滚动期间不按滚动位置改写
+    currentLockUntil = Date.now() + 1200;
+    currentTurnId = null;
+    setCurrentTurn(t.id);
+    if (!FULL_MODE && window.innerWidth < 560) setMapOpen(false); // 窄侧边栏里跳转后收起抽屉，免得挡住内容
+  });
+  row.appendChild(node);
+  li.appendChild(row);
+
+  if (hasKids) {
+    const sub = document.createElement('ul');
+    sub.className = 'tm-list';
+    sub.setAttribute('role', 'group');
+    sub.hidden = collapsed;
+    for (const c of t.children) sub.appendChild(renderTurn(c));
+    li.appendChild(sub);
+  }
+  return li;
+}
+
+/**
+ * 关系图里高亮当前正在看的那一轮：取对话区顶部附近第一条可见的消息。
+ * 已经滚到底时，取视口里最后一次提问（最后几轮可能一起出现在屏幕上，顶部那条不代表正在看的）。
+ */
+function markCurrentTurn(force) {
+  if (!mapOpen) return;
+  if (!force && Date.now() < currentLockUntil) return;
+  const box = els.messages.getBoundingClientRect();
+  let turnId = null;
+  let lastUser = null;
+  const all = els.messages.querySelectorAll('.msg');
+  if (isNearBottom() && els.messages.scrollTop > 0) {
+    for (const wrap of all) {
+      if (!wrap.classList.contains('user')) continue;
+      const r = wrap.getBoundingClientRect();
+      if (r.top >= box.top && r.top < box.bottom - 40) turnId = wrap.dataset.id;
+    }
+  }
+  if (!turnId) {
+    for (const wrap of all) {
+      if (wrap.classList.contains('user')) lastUser = wrap.dataset.id;
+      const r = wrap.getBoundingClientRect();
+      if (r.bottom > box.top + 40) {
+        turnId = wrap.classList.contains('user') ? wrap.dataset.id : lastUser;
+        break;
+      }
+    }
+  }
+  if (!force && turnId === currentTurnId) return;
+  setCurrentTurn(turnId);
+}
+
+function setCurrentTurn(turnId) {
+  if (Date.now() < currentLockUntil && turnId !== currentTurnId && currentTurnId) return;
+  currentTurnId = turnId;
+  els.tmTree.querySelectorAll('.tm-item.current').forEach((li) => li.classList.remove('current'));
+  if (!turnId) return;
+  let li = els.tmTree.querySelector('li[data-turn="' + CSS.escape(turnId) + '"]');
+  if (!li) return;
+  // 当前轮次在折叠的分支里：高亮折叠起来的那个祖先
+  for (let p = li.parentElement; p && p !== els.tmTree; p = p.parentElement) {
+    if (p.tagName === 'UL' && p.hidden) li = p.closest('li');
+  }
+  li.classList.add('current');
+  const row = li.querySelector('.tm-row');
+  const tr = row.getBoundingClientRect();
+  const mr = els.tmTree.getBoundingClientRect();
+  if (tr.top < mr.top || tr.bottom > mr.bottom) row.scrollIntoView({ block: 'nearest' });
+}
+let curRaf = 0;
+els.messages.addEventListener(
+  'scroll',
+  () => {
+    if (!mapOpen || curRaf) return;
+    curRaf = requestAnimationFrame(() => {
+      curRaf = 0;
+      markCurrentTurn(false);
+    });
+  },
+  { passive: true }
+);
 
 // ---------- 初始化 ----------
 (async function init() {

@@ -7,7 +7,9 @@
 // 「开过侧边栏的标签页」集合存在 chrome.storage.session（浏览器关闭即清空）。
 
 const ENABLED_TABS_KEY = 'enabledTabs';
-const MENU_EXPLAIN = 'kiro-explain-selection';
+const MENU_FOLLOWUP = 'kiro-followup-selection'; // 网页上选中文字后追问
+const MENU_FOLLOWUP_PANEL = 'kiro-followup-answer'; // 侧边栏 / 全屏页里选中回答后追问
+const EXT_PAGES = [chrome.runtime.getURL('*')];
 const SIDE_PANEL_PATH = 'sidepanel.html';
 
 // ---------- 启用集合读写 ----------
@@ -84,23 +86,37 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   // 对话内容由 sidepanel 侧的 conv_<tabId> 负责清理
 });
 
-// ---------- 右键菜单「用 Kiro 解释选中内容」----------
+// ---------- 右键菜单「追问」----------
 function createContextMenus() {
   if (!chrome.contextMenus) return;
   chrome.contextMenus.removeAll(() => {
     chrome.contextMenus.create({
-      id: MENU_EXPLAIN,
-      title: '用 Kiro 解释选中内容',
+      id: MENU_FOLLOWUP,
+      title: '用 Kiro 追问选中内容',
       contexts: ['selection'],
+      documentUrlPatterns: ['http://*/*', 'https://*/*', 'file:///*'],
+    });
+    // 插件自己的页面（侧边栏、全屏页）：对 Kiro 的回答追问
+    chrome.contextMenus.create({
+      id: MENU_FOLLOWUP_PANEL,
+      title: '追问这段内容',
+      contexts: ['selection'],
+      documentUrlPatterns: EXT_PAGES,
     });
   });
 }
 
 chrome.contextMenus &&
   chrome.contextMenus.onClicked.addListener((info, tab) => {
-    if (info.menuItemId !== MENU_EXPLAIN) return;
     const selection = (info.selectionText || '').trim();
-    if (!selection || !tab || tab.id == null) return;
+    if (!selection) return;
+
+    if (info.menuItemId === MENU_FOLLOWUP_PANEL) {
+      // 由有焦点的侧边栏 / 全屏页按当前选区处理
+      chrome.runtime.sendMessage({ type: 'kiro-followup-selection', text: selection }).catch(() => {});
+      return;
+    }
+    if (info.menuItemId !== MENU_FOLLOWUP || !tab || tab.id == null) return;
 
     // open() 必须在手势同步栈内调用
     if (chrome.sidePanel && chrome.sidePanel.open) {
@@ -109,10 +125,11 @@ chrome.contextMenus &&
     setPanelEnabled(tab.id, true);
     markTabEnabled(tab.id);
 
+    // 侧边栏把这段文字放进引用条，等用户输入问题
     chrome.storage.session
       .set({
         pendingAction: {
-          type: 'explain',
+          type: 'followup',
           text: selection,
           url: (tab && tab.url) || '',
           ts: Date.now(),

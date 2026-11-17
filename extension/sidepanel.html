@@ -62,6 +62,14 @@
           <span class="status-dot" aria-hidden="true"></span>
           <span class="status-text" id="statusText">检测中</span>
         </button>
+        <button class="icon-btn" id="mapBtn" type="button" title="追问关系图" aria-label="追问关系图" aria-pressed="false">
+          <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <circle cx="6" cy="5.5" r="2" stroke="currentColor" stroke-width="1.6" />
+            <circle cx="18" cy="12" r="2" stroke="currentColor" stroke-width="1.6" />
+            <circle cx="18" cy="19" r="2" stroke="currentColor" stroke-width="1.6" />
+            <path d="M6 7.5V15a4 4 0 004 4h6M6 12h10" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+          </svg>
+        </button>
         <button class="icon-btn" id="expandBtn" type="button" title="在新标签页中全屏打开" aria-label="全屏打开">
           <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
             <path d="M14 4h6v6M20 4l-7 7M10 20H4v-6M4 20l7-7" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
@@ -129,7 +137,30 @@
 
     
     <!-- 对话区 -->
-    <main class="messages" id="messages"></main>
+    <div class="chat-body" id="chatBody">
+      <main class="messages" id="messages"></main>
+
+      <!-- 选中回答里的文字后浮出的「追问」按钮 -->
+      <button type="button" class="sel-ask hidden" id="selAsk">
+        <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <path d="M5 5h14v10H9l-4 4V5z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round" />
+        </svg>
+        <span>追问</span>
+      </button>
+
+      <!-- 追问关系图：侧边栏里是右侧抽屉，全屏页里是右栏 -->
+      <aside class="thread-map" id="threadMap" aria-label="追问关系图">
+        <div class="tm-head">
+          <span class="tm-title">追问关系</span>
+          <button class="icon-btn icon-btn--sm" id="mapClose" type="button" title="收起" aria-label="收起追问关系图">
+            <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path d="M6 6l12 12M18 6L6 18" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
+            </svg>
+          </button>
+        </div>
+        <div class="tm-tree" id="tmTree" role="tree"></div>
+      </aside>
+    </div>
 
     <!-- 输入区 -->
     <form class="composer" id="composer">
@@ -139,6 +170,16 @@
         <button type="button" data-q="请把这个页面的核心要点提炼成不超过 5 条的清单。">提取要点</button>
         <button type="button" data-q="请把这个页面的主要内容翻译成中文。">翻译</button>
         <button type="button" data-q="这个页面里有哪些关键数据、数字或结论？请列出来。">关键数据</button>
+      </div>
+      <!-- 追问引用条：显示这次提问引用的是哪段内容 -->
+      <div class="quote-bar hidden" id="quoteBar">
+        <span class="quote-bar-label" id="quoteLabel">追问</span>
+        <span class="quote-bar-text" id="quoteText"></span>
+        <button type="button" class="quote-bar-clear" id="quoteClear" title="取消引用" aria-label="取消引用">
+          <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <path d="M7 7l10 10M17 7L7 17" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
+          </svg>
+        </button>
       </div>
       <div class="composer-field">
         <textarea

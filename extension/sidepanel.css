@@ -789,14 +789,22 @@ body.full {
   font-size: 14.5px;
 }
 /* 顶部各栏保持通栏背景，内容居中对齐到阅读宽度 */
+/* 关系图展开时右侧让出 --map-w，对话列在剩下的宽度里居中，顶栏和输入框跟着对齐 */
+body.full {
+  --map-w: 0px;
+  --col-pad: max(16px, calc((100vw - var(--map-w) - 880px) / 2));
+}
+body.full.map-open {
+  --map-w: 300px;
+}
 body.full .topbar,
 body.full .backend-bar,
 body.full .composer {
-  padding-left: max(16px, calc((100vw - 880px) / 2));
-  padding-right: max(16px, calc((100vw - 880px) / 2));
+  padding-left: var(--col-pad);
+  padding-right: calc(var(--col-pad) + var(--map-w));
 }
 body.full .messages {
-  padding: 24px max(16px, calc((100vw - 880px) / 2)) 32px;
+  padding: 24px var(--col-pad) 32px;
   gap: 18px;
 }
 body.full .msg.user {
@@ -1480,4 +1488,357 @@ body.full .step-body {
 /* 全屏页里预览浮层更宽，方便看表格和代码 */
 body.full .modal {
   max-width: 860px;
+}
+
+
+/* ---------- 追问 ---------- */
+.chat-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  position: relative;
+  overflow: hidden; /* 收起的抽屉移在右侧外面，不能撑出横向滚动条 */
+}
+.chat-body .messages {
+  min-width: 0;
+}
+.icon-btn.active {
+  color: var(--accent);
+  background: var(--accent-wash);
+}
+
+/* 选中回答文字后浮出的按钮 */
+.sel-ask {
+  position: absolute;
+  z-index: 20;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 28px;
+  padding: 0 11px 0 9px;
+  border: 0;
+  border-radius: 8px;
+  background: #202124;
+  color: #fff;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  box-shadow: 0 2px 6px rgba(32, 33, 36, 0.18), 0 8px 20px rgba(32, 33, 36, 0.16);
+  animation: sel-ask-in 0.16s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+.sel-ask svg {
+  width: 14px;
+  height: 14px;
+}
+.sel-ask:hover {
+  background: #000;
+}
+.sel-ask:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+@keyframes sel-ask-in {
+  from {
+    opacity: 0;
+    transform: translateY(3px);
+  }
+}
+
+/* 输入框上方的引用条 */
+.quote-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 8px;
+  padding: 5px 4px 5px 10px;
+  background: var(--bg-sunken);
+  border-radius: 10px;
+  font-size: 12px;
+  min-width: 0;
+}
+.quote-bar-label {
+  flex-shrink: 0;
+  font-size: 11px;
+  font-weight: 600;
+  color: #1557b0;
+}
+.quote-bar-text {
+  flex: 1;
+  min-width: 0;
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.quote-bar-text::before {
+  content: "“";
+}
+.quote-bar-clear {
+  flex-shrink: 0;
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-faint);
+  cursor: pointer;
+}
+.quote-bar-clear svg {
+  width: 13px;
+  height: 13px;
+}
+.quote-bar-clear:hover {
+  background: #e3e5e8;
+  color: var(--text);
+}
+
+/* 追问气泡顶部的引用摘要 */
+.msg-quote {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  width: 100%;
+  margin: 0 0 6px;
+  padding: 0 0 6px;
+  border: 0;
+  border-bottom: 1px solid rgba(32, 33, 36, 0.08);
+  background: none;
+  font: inherit;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--text-dim);
+  text-align: left;
+  white-space: normal;
+  cursor: pointer;
+}
+.msg-quote::before {
+  content: "“";
+}
+.msg-quote:hover {
+  color: var(--text);
+}
+
+/* 被追问过的原文 */
+mark.quote-anchor {
+  background: rgba(26, 115, 232, 0.1);
+  color: inherit;
+  border-radius: 2px;
+  box-shadow: 0 1px 0 rgba(26, 115, 232, 0.45);
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+mark.quote-anchor:hover {
+  background: rgba(26, 115, 232, 0.18);
+}
+mark.quote-anchor.flash,
+.msg.flash {
+  animation: tm-flash 1.1s ease-out;
+}
+@keyframes tm-flash {
+  0%,
+  30% {
+    background-color: rgba(26, 115, 232, 0.2);
+  }
+}
+
+/* ---------- 追问关系图 ---------- */
+/* 侧边栏：从右侧滑出、盖在对话上方的抽屉 */
+.thread-map {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 15;
+  width: min(272px, 84%);
+  display: flex;
+  flex-direction: column;
+  background: var(--panel);
+  border-left: 1px solid var(--border-soft);
+  box-shadow: -2px 0 6px rgba(32, 33, 36, 0.06), -12px 0 28px rgba(32, 33, 36, 0.08);
+  transform: translateX(100%);
+  visibility: hidden;
+  transition: transform 0.24s cubic-bezier(0.16, 1, 0.3, 1), visibility 0s linear 0.24s;
+}
+body.map-open .thread-map {
+  transform: none;
+  visibility: visible;
+  transition: transform 0.24s cubic-bezier(0.16, 1, 0.3, 1);
+}
+/* 全屏页：对话区右侧的常驻栏（在文档流里，不盖住对话） */
+body.full .thread-map {
+  position: static;
+  flex-shrink: 0;
+  width: var(--map-w);
+  box-shadow: none;
+  transform: none;
+  transition: none;
+}
+body.full:not(.map-open) .thread-map {
+  display: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  .thread-map,
+  body.map-open .thread-map {
+    transition: none;
+  }
+}
+
+.tm-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 6px 8px 14px;
+  border-bottom: 1px solid var(--border-soft);
+  flex-shrink: 0;
+}
+.tm-title {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text);
+}
+.tm-tree {
+  flex: 1;
+  overflow-y: auto;
+  padding: 10px 8px 20px 6px;
+}
+.tm-empty {
+  margin: 8px 8px 0;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-dim);
+}
+.tm-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+/* 子节点：左侧一条细线连到父节点 */
+.tm-item > .tm-list {
+  margin-left: 9px;
+  padding-left: 8px;
+  border-left: 1px solid var(--border);
+}
+.tm-item + .tm-item {
+  margin-top: 2px;
+}
+.tm-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 2px;
+}
+.tm-toggle,
+.tm-dot {
+  flex-shrink: 0;
+  width: 18px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.tm-toggle {
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-faint);
+  cursor: pointer;
+}
+.tm-toggle:hover {
+  color: var(--text);
+  background: var(--bg-sunken);
+}
+.tm-toggle svg {
+  width: 12px;
+  height: 12px;
+  transition: transform 0.15s ease;
+}
+.tm-item[aria-expanded="true"] > .tm-row .tm-toggle svg {
+  transform: rotate(90deg);
+}
+.tm-dot::before {
+  content: "";
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: #c4c7cc;
+}
+.tm-node {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 5px 8px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.45;
+  text-align: left;
+  cursor: pointer;
+}
+.tm-node:hover {
+  background: var(--bg-sunken);
+}
+.tm-node:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.tm-q {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  word-break: break-word;
+}
+.tm-quote {
+  font-size: 11px;
+  color: var(--text-faint);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.tm-quote::before {
+  content: "“";
+}
+.tm-quote-page::before {
+  content: "网页 · “";
+}
+.tm-more {
+  font-size: 11px;
+  color: var(--text-faint);
+}
+.tm-error .tm-q {
+  color: var(--danger);
+}
+.tm-waiting .tm-q {
+  color: var(--text-dim);
+}
+/* 当前正在看的那一轮 */
+.tm-item.current > .tm-row .tm-node {
+  background: var(--accent-wash);
+}
+.tm-item.current > .tm-row .tm-node .tm-q {
+  color: #1557b0;
+  font-weight: 550;
+}
+.tm-item.current > .tm-row .tm-dot::before {
+  background: var(--accent);
+}
+/* 正在准备的追问 */
+.tm-pending .tm-node {
+  margin-left: 20px;
+  border: 1px dashed var(--border);
+  cursor: default;
+  color: var(--text-faint);
+}
+.tm-pending .tm-node:hover {
+  background: transparent;
 }
