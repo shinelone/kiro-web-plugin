@@ -1247,7 +1247,10 @@ body.full .step-body {
 }
 .msg.assistant:hover .msg-actions,
 .msg.assistant:focus-within .msg-actions,
-.msg.assistant:last-child .msg-actions {
+.msg.assistant:last-child .msg-actions,
+.msg.error:hover .msg-actions,
+.msg.error:focus-within .msg-actions,
+.msg.error:last-child .msg-actions {
   opacity: 1;
 }
 .msg-action {
@@ -1292,7 +1295,13 @@ body.full .step-body {
 .msg-action.done {
   color: var(--ok);
 }
-.msg-action.done span {
+/* 删除按钮按下后进入确认态：变红并显示「确认删除」文字 */
+.msg-action.danger {
+  color: var(--danger);
+  background: var(--danger-bg);
+}
+.msg-action.done span,
+.msg-action.danger span {
   position: static;
   width: auto;
   height: auto;

@@ -1086,9 +1086,10 @@ async function ask(question, quote = null, images = null) {
 /** 为一条已完成的助手回答添加操作条（复制整条回答 / 重新生成） */
 function maybeAddAnswerActions(answerEl) {
   const wrap = answerEl.parentElement;
-  if (!wrap || !wrap.classList.contains('assistant')) return; // 错误气泡不加
+  const isErr = wrap && wrap.classList.contains('error');
+  if (!wrap || (!wrap.classList.contains('assistant') && !isErr)) return;
   if (wrap.querySelector('.msg-actions')) return; // 已有则跳过
-  const raw = (answerEl.dataset.raw || '').trim();
+  const raw = (answerEl.dataset.raw || answerEl.textContent || '').trim();
   if (!raw) return; // 空回答不加
 
   const bar = document.createElement('div');
@@ -1101,7 +1102,7 @@ function maybeAddAnswerActions(answerEl) {
   copyBtn.title = '复制';
   copyBtn.addEventListener('click', () => {
     navigator.clipboard
-      .writeText(answerEl.dataset.raw || '')
+      .writeText(answerEl.dataset.raw || answerEl.textContent || '')
       .then(() => flashAction(copyBtn, '已复制'))
       .catch(() => flashAction(copyBtn, '复制失败'));
   });
@@ -1127,9 +1128,65 @@ function maybeAddAnswerActions(answerEl) {
     ask(q, quote, imgs);
   });
 
+  const delBtn = document.createElement('button');
+  delBtn.type = 'button';
+  delBtn.className = 'msg-action';
+  delBtn.innerHTML = actionIcon('trash') + '<span>删除</span>';
+  delBtn.title = '删除这一问一答';
+  wireDelete(delBtn, wrap);
+
   bar.appendChild(copyBtn);
   bar.appendChild(regenBtn);
+  bar.appendChild(delBtn);
   wrap.appendChild(bar);
+}
+
+/**
+ * 删除按钮：两次点击确认（第一次变成「确认删除」，2.5 秒内再点才真正删），避免误删。
+ * 删除的是一「对」问答：这条回答 + 它前面对应的那条用户提问。
+ */
+function wireDelete(btn, wrap) {
+  let armed = false;
+  let timer = null;
+  const reset = () => {
+    armed = false;
+    clearTimeout(timer);
+    btn.classList.remove('danger');
+    const span = btn.querySelector('span');
+    if (span) span.textContent = '删除';
+  };
+  btn.addEventListener('click', () => {
+    if (currentController) return; // 生成中不删
+    if (!armed) {
+      armed = true;
+      btn.classList.add('danger');
+      const span = btn.querySelector('span');
+      if (span) span.textContent = '确认删除';
+      timer = setTimeout(reset, 2500);
+      return;
+    }
+    clearTimeout(timer);
+    deletePair(wrap);
+  });
+  // 鼠标移开后复位，避免停在「确认删除」状态
+  btn.addEventListener('mouseleave', () => armed && reset());
+}
+
+/** 删除一对问答：assistantWrap 和它前面紧邻的那条用户提问 */
+function deletePair(assistantWrap) {
+  const prev = assistantWrap.previousElementSibling;
+  const delUser = prev && prev.classList.contains('user') ? prev : null;
+  assistantWrap.remove();
+  if (delUser) delUser.remove();
+  afterDelete();
+}
+
+/** 删除后统一收尾：空了显示提示，刷新原文高亮和关系图，持久化 */
+function afterDelete() {
+  if (els.messages.querySelectorAll('.msg').length === 0) showEmptyHint();
+  applyAnchors();
+  refreshMap();
+  saveConversation();
 }
 
 function flashAction(btn, text) {
@@ -1145,6 +1202,13 @@ function flashAction(btn, text) {
 }
 
 function actionIcon(kind) {
+  if (kind === 'trash') {
+    return (
+      '<svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">' +
+      '<path d="M4 7h16M9.5 7V5.5A1.5 1.5 0 0111 4h2a1.5 1.5 0 011.5 1.5V7M6 7l.8 11.2A2 2 0 008.8 20h6.4a2 2 0 002-1.8L18 7" ' +
+      'stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>'
+    );
+  }
   if (kind === 'copy') {
     return (
       '<svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">' +
