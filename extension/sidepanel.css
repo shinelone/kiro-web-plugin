@@ -1842,3 +1842,162 @@ body.full:not(.map-open) .thread-map {
 .tm-pending .tm-node:hover {
   background: transparent;
 }
+
+/* ---------- 图片 ---------- */
+.tools-divider {
+  width: 1px;
+  height: 16px;
+  margin: 0 2px;
+  background: var(--border);
+  flex-shrink: 0;
+}
+.composer-tools .icon-btn--sm {
+  color: var(--text-faint);
+}
+.composer-tools .icon-btn--sm:hover {
+  color: var(--text);
+}
+.composer-tools .icon-btn--sm:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* 待发送的图片 */
+.attach-bar {
+  display: flex;
+  gap: 8px;
+  margin: 0 0 8px;
+  flex-wrap: wrap;
+}
+.attach-item {
+  position: relative;
+  width: 56px;
+  height: 56px;
+  flex-shrink: 0;
+}
+.attach-thumb {
+  display: block;
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+  overflow: hidden;
+  background: var(--bg-sunken);
+  cursor: zoom-in;
+}
+.attach-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.attach-del {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  width: 20px;
+  height: 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 2px solid var(--panel);
+  border-radius: 50%;
+  background: #3c4043;
+  color: #fff;
+  cursor: pointer;
+}
+.attach-del svg {
+  width: 10px;
+  height: 10px;
+}
+.attach-del:hover {
+  background: #202124;
+}
+.attach-loading {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px dashed var(--border);
+  border-radius: 10px;
+}
+.composer-note {
+  margin: 0 0 8px;
+  font-size: 12px;
+  color: #a50e0e;
+}
+
+/* 提问气泡里的图片 */
+.msg-images {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+  margin: 2px 0 8px;
+}
+.msg-img {
+  display: block;
+  padding: 0;
+  border: 0;
+  border-radius: 10px;
+  overflow: hidden;
+  background: #fff;
+  cursor: zoom-in;
+}
+.msg-img img {
+  display: block;
+  max-width: 180px;
+  max-height: 140px;
+  object-fit: cover;
+}
+.msg-images:has(.msg-img:nth-child(2)) .msg-img img {
+  width: 96px;
+  height: 96px;
+}
+
+/* 拖着图片进来时，输入框高亮提示可以放下 */
+body.dropping .composer-field {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(26, 115, 232, 0.12);
+  background: var(--accent-wash);
+}
+
+/* 大图查看 */
+.img-viewer {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(32, 33, 36, 0.72);
+  cursor: zoom-out;
+  animation: viewer-in 0.16s ease-out both;
+}
+.img-viewer img {
+  max-width: 100%;
+  max-height: 100%;
+  border-radius: 8px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.35);
+  background: #fff;
+}
+@keyframes viewer-in {
+  from {
+    opacity: 0;
+  }
+}
+
+/* 关系图里带图片的提问 */
+.tm-img {
+  display: inline-block;
+  vertical-align: -2px;
+  margin-right: 4px;
+  color: var(--text-faint);
+}
+.tm-img svg {
+  width: 12px;
+  height: 12px;
+  display: block;
+}

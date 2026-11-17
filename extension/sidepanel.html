@@ -119,6 +119,9 @@
       <button type="button" class="backend-btn" id="startBackendBtn">启动后端</button>
     </div>
 
+    <!-- 图片大图查看 -->
+    <div class="img-viewer hidden" id="imgViewer" role="dialog" aria-label="查看图片"></div>
+
     <!-- 页面内容预览浮层 -->
     <div class="modal-overlay hidden" id="previewModal">
       <div class="modal" role="dialog" aria-modal="true" aria-labelledby="previewTitle">
@@ -181,6 +184,9 @@
           </svg>
         </button>
       </div>
+      <!-- 待发送的图片 -->
+      <div class="attach-bar hidden" id="attachBar"></div>
+      <div class="composer-note hidden" id="composerNote" role="status"></div>
       <div class="composer-field">
         <textarea
           id="input"
@@ -205,6 +211,21 @@
         </button>
       </div>
       <div class="composer-tools">
+        <button type="button" class="icon-btn icon-btn--sm" id="attachBtn" title="添加图片（也可以直接粘贴或拖进来）" aria-label="添加图片">
+          <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <rect x="3.5" y="5" width="17" height="14" rx="2.5" stroke="currentColor" stroke-width="1.6" />
+            <circle cx="9" cy="10" r="1.6" stroke="currentColor" stroke-width="1.5" />
+            <path d="M4 17l4.5-4.5 3.5 3.5 3-3 5 5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
+          </svg>
+        </button>
+        <button type="button" class="icon-btn icon-btn--sm" id="shotBtn" title="截取当前网页可见区域" aria-label="截取当前网页">
+          <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path d="M4 8V5.5A1.5 1.5 0 015.5 4H8M16 4h2.5A1.5 1.5 0 0120 5.5V8M20 16v2.5a1.5 1.5 0 01-1.5 1.5H16M8 20H5.5A1.5 1.5 0 014 18.5V16" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+            <circle cx="12" cy="12" r="3" stroke="currentColor" stroke-width="1.6" />
+          </svg>
+        </button>
+        <input type="file" id="fileInput" accept="image/png,image/jpeg,image/webp,image/gif" multiple hidden />
+        <span class="tools-divider" aria-hidden="true"></span>
         <label class="model-pick" id="agentPick" title="切换 Agent（切换后开启新会话）">
           <svg class="model-pick-icon" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
             <circle cx="12" cy="8" r="3.5" stroke="currentColor" stroke-width="1.6" />

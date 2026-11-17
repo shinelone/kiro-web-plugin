@@ -32,10 +32,11 @@ const RESTART_BACKOFF_MS = [0, 1000, 3000, 10000]; // 连续崩溃时的重启�
 class AcpError extends Error {}
 
 class AcpManager {
-  constructor({ kiroBin, cwd, canReadFile = () => false, log = () => {} }) {
+  constructor({ kiroBin, cwd, canReadFile = () => false, denyMessage = null, log = () => {} }) {
     this.kiroBin = kiroBin;
     this.cwd = cwd;
     this.canReadFile = canReadFile;
+    this.denyMessage = denyMessage;
     this.log = log;
     this.proc = null;
     this.ready = null; // Promise<void>，进程启动并完成 initialize
@@ -242,7 +243,10 @@ class AcpManager {
     if (!this.canReadFile(p)) {
       this._safeSend({
         id: m.id,
-        error: { code: -32000, message: '不允许读取该文件：本插件只允许读取页面文件（server/workspace/pages/ 下的 .md）' },
+        error: {
+          code: -32000,
+          message: this.denyMessage ? this.denyMessage() : '不允许读取该文件：本插件只允许读取页面文件（server/workspace/pages/ 下的 .md）',
+        },
       });
       return;
     }
@@ -366,7 +370,10 @@ class AcpManager {
    * 发起一轮问答。onUpdate 收到 ACP 的 session/update（与 stream-json 里的 update 结构相同）。
    * 返回 { stopReason }。
    */
-  async prompt(sessionId, text, onUpdate) {
+  /**
+   * images：[{ mimeType, data(base64) }]，放在文字前面一起发（kiro-cli 3.3 的 promptCapabilities.image 为 true）
+   */
+  async prompt(sessionId, text, onUpdate, images = []) {
     const s = this.sessions.get(sessionId);
     if (!s) throw new AcpError('会话不存在');
     if (s.busy) throw new AcpError('该会话正在回答上一个问题');
@@ -374,7 +381,9 @@ class AcpManager {
     s.onUpdate = onUpdate;
     s.lastUsed = Date.now();
     try {
-      return await this._request('session/prompt', { sessionId, prompt: [{ type: 'text', text }] }, 0);
+      const blocks = images.map((im) => ({ type: 'image', mimeType: im.mimeType, data: im.data }));
+      blocks.push({ type: 'text', text });
+      return await this._request('session/prompt', { sessionId, prompt: blocks }, 0);
     } finally {
       s.busy = false;
       s.onUpdate = null;

@@ -426,6 +426,18 @@
         border-color: var(--accent);
         background: rgba(26, 115, 232, 0.05);
       }
+      #readSection label.check {
+        margin-top: 10px;
+      }
+      #readDirs {
+        margin: 8px 0 0 24px;
+        width: calc(100% - 24px);
+        font-family: "SF Mono", ui-monospace, Menlo, monospace;
+        font-size: 12px;
+      }
+      #readErr {
+        color: #d93025;
+      }
       .hint.warn {
         color: #8a5300;
         background: #fef7e6;
@@ -493,6 +505,30 @@
         <input id="autoStart" type="checkbox" checked />
         <span>后端离线时自动启动（需安装下方启动器）</span>
       </label>
+
+      <div class="section" id="readSection">
+        <div class="section-title">文件读取权限</div>
+        <div class="hint">
+          控制 Kiro 的「读文件」工具能读哪些文件（agent 需要勾选「读文件」工具）。列目录、搜索不受这里限制。
+        </div>
+        <label class="check">
+          <input type="radio" name="readScope" value="pages" checked />
+          <span>只读页面文件（推荐）</span>
+        </label>
+        <label class="check">
+          <input type="radio" name="readScope" value="dirs" />
+          <span>页面文件和下面这些目录</span>
+        </label>
+        <textarea id="readDirs" rows="3" placeholder="每行一个绝对路径，例如&#10;~/workspace&#10;/Applications" spellcheck="false"></textarea>
+        <label class="check">
+          <input type="radio" name="readScope" value="all" />
+          <span>本机所有文件</span>
+        </label>
+        <div class="hint warn hidden" id="readWarn">
+          放宽后，网页里藏着的恶意指令可能诱导 Kiro 读取本机文件，再用联网工具发出去。只在信任当前页面时使用，用完建议改回「只读页面文件」。
+        </div>
+        <div class="hint hidden" id="readErr"></div>
+      </div>
 
       <div class="row">
         <button id="saveBtn">保存</button>

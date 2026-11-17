@@ -99,6 +99,62 @@ function fillAgentSelect(selected) {
   agentEl.value = selected || '';
 }
 
+// ---------- 文件读取权限（保存在后端） ----------
+const readDirsEl = document.getElementById('readDirs');
+const readWarnEl = document.getElementById('readWarn');
+const readErrEl = document.getElementById('readErr');
+const scopeRadios = [...document.querySelectorAll('input[name="readScope"]')];
+let readLoaded = false; // 后端没连上时不提交，免得用默认值覆盖后端的配置
+
+function currentScope() {
+  const r = scopeRadios.find((x) => x.checked);
+  return r ? r.value : 'pages';
+}
+function syncReadUi() {
+  const scope = currentScope();
+  readDirsEl.disabled = scope !== 'dirs';
+  readWarnEl.classList.toggle('hidden', scope === 'pages');
+}
+scopeRadios.forEach((r) => r.addEventListener('change', syncReadUi));
+
+function showReadErr(msg) {
+  readErrEl.textContent = msg || '';
+  readErrEl.classList.toggle('hidden', !msg);
+}
+
+async function loadReadScope() {
+  try {
+    const c = await api('/config');
+    scopeRadios.forEach((r) => (r.checked = r.value === c.readScope));
+    readDirsEl.value = (c.readDirs || []).join('\n');
+    readLoaded = true;
+    showReadErr('');
+  } catch (e) {
+    readLoaded = false;
+    showReadErr('读取后端配置失败：' + e.message + '（后端离线或版本过旧时无法修改）');
+  }
+  syncReadUi();
+}
+
+async function saveReadScope() {
+  if (!readLoaded) return true;
+  try {
+    const c = await api('/config', {
+      method: 'PUT',
+      body: JSON.stringify({
+        readScope: currentScope(),
+        readDirs: readDirsEl.value.split('\n').map((l) => l.trim()).filter(Boolean),
+      }),
+    });
+    readDirsEl.value = (c.readDirs || []).join('\n'); // 显示展开 ~ 之后的路径
+    showReadErr('');
+    return true;
+  } catch (e) {
+    showReadErr('文件读取权限没有保存：' + e.message);
+    return false;
+  }
+}
+
 async function load() {
   const s = await chrome.storage.sync.get(['endpoint', 'model', 'agent', 'autoStart']);
   endpointEl.value = s.endpoint || DEFAULT_ENDPOINT;
@@ -106,6 +162,7 @@ async function load() {
   fillAgentSelect(s.agent || '');
   await loadModels(s.model || '');
   await loadAgents(s.agent || '');
+  await loadReadScope();
 }
 
 document.getElementById('saveBtn').addEventListener('click', async () => {
@@ -115,6 +172,10 @@ document.getElementById('saveBtn').addEventListener('click', async () => {
     agent: agentEl.value,
     autoStart: autoStartEl.checked,
   });
+  if (!(await saveReadScope())) {
+    savedEl.textContent = '';
+    return;
+  }
   savedEl.textContent = '已保存 ✓';
   setTimeout(() => (savedEl.textContent = ''), 2000);
 });

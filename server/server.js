@@ -20,6 +20,7 @@ const { execFile } = require('child_process');
 const agents = require('./agents');
 const { AcpManager } = require('./acp');
 const pages = require('./pages');
+const readscope = require('./readscope');
 
 // ----- 配置 -----
 const PORT = Number(process.env.PORT || 8787);
@@ -87,7 +88,8 @@ function readBody(req, limit = 1 << 20) {
 const acp = new AcpManager({
   kiroBin: KIRO_BIN,
   cwd: agents.WORKSPACE_DIR,
-  canReadFile: pages.isReadablePath, // 只允许读页面文件
+  canReadFile: readscope.canReadFile, // 读文件范围由设置页的「文件读取权限」决定，默认只读页面文件
+  denyMessage: readscope.denyMessage,
   log: (m) => console.log(new Date().toISOString(), m),
 });
 const getModes = () => acp.listModes();
@@ -230,18 +232,46 @@ async function defaultModelId() {
   }
 }
 
+// ----- 图片 -----
+const IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
+const MAX_IMAGES = 4;
+const MAX_IMAGE_BYTES = 4 << 20; // 单张解码后的大小
+
+/** 校验插件发来的图片：类型白名单、张数、大小、base64 格式 */
+function checkImages(list) {
+  if (list == null) return { images: [] };
+  if (!Array.isArray(list)) return { error: 'images 必须是数组' };
+  if (list.length > MAX_IMAGES) return { error: `一次最多发送 ${MAX_IMAGES} 张图片` };
+  const images = [];
+  for (const im of list) {
+    const mimeType = im && String(im.mimeType || '');
+    const data = im && typeof im.data === 'string' ? im.data : '';
+    if (!IMAGE_TYPES.has(mimeType)) return { error: '不支持的图片格式: ' + mimeType };
+    if (!data || !/^[A-Za-z0-9+/]+={0,2}$/.test(data)) return { error: '图片数据不是有效的 base64' };
+    if (data.length * 0.75 > MAX_IMAGE_BYTES) return { error: '图片太大（单张不超过 4MB）' };
+    images.push({ mimeType, data });
+  }
+  return { images };
+}
+
 /** 处理 /ask：流式问答（复用常驻的 kiro-cli acp 进程） */
 async function handleAsk(req, res) {
   let payload;
   try {
-    // 带页面全文时请求体较大（20 万字的中文约 600KB）
-    payload = JSON.parse((await readBody(req, 4 << 20)) || '{}');
+    // 带页面全文和图片时请求体较大（20 万字的中文约 600KB，图片最多 4 张、每张不超过 4MB）
+    payload = JSON.parse((await readBody(req, 24 << 20)) || '{}');
   } catch (e) {
     sendJson(res, 400, { error: '无效的请求体: ' + e.message });
     return;
   }
 
   const prompt = (payload.prompt || '').toString().trim();
+  const imgCheck = checkImages(payload.images);
+  if (imgCheck.error) {
+    sendJson(res, 400, { error: imgCheck.error });
+    return;
+  }
+  const images = imgCheck.images;
   if (!prompt) {
     sendJson(res, 400, { error: 'prompt 不能为空' });
     return;
@@ -333,7 +363,7 @@ async function handleAsk(req, res) {
         return;
       }
       if (!closed) forwardUpdate(res, update);
-    });
+    }, images);
     if (streamError) throw new Error(streamError);
     sseSend(res, 'done', {
       status: r && r.stopReason === 'cancelled' ? 'cancelled' : 'success',
@@ -341,7 +371,9 @@ async function handleAsk(req, res) {
       elapsedMs: Date.now() - t0,
     });
   } catch (e) {
-    if (!closed) sseSend(res, 'error', { message: e.message || String(e) });
+    let message = e.message || String(e);
+    if (images.length) message += '\n（带了图片：如果当前模型不支持图片，请在输入框下方换一个模型再试）';
+    if (!closed) sseSend(res, 'error', { message });
   } finally {
     if (!closed) {
       res.write('event: end\ndata: {}\n\n');
@@ -398,7 +430,7 @@ const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://localhost:${PORT}`);
 
   if (req.method === 'GET' && url.pathname === '/health') {
-    sendJson(res, 200, { ok: true, kiroBin: KIRO_BIN, features: ['models', 'agents', 'acp', 'page'], acp: acp.status() });
+    sendJson(res, 200, { ok: true, kiroBin: KIRO_BIN, features: ['models', 'agents', 'acp', 'page', 'image', 'config'], acp: acp.status() });
     return;
   }
 
@@ -408,6 +440,29 @@ const server = http.createServer(async (req, res) => {
     } catch (e) {
       sendJson(res, 500, { error: '获取模型列表失败: ' + e.message });
     }
+    return;
+  }
+
+  // 文件读取权限：GET 读取，PUT 修改（设置页使用）
+  if (url.pathname === '/config') {
+    if (req.method === 'GET') {
+      sendJson(res, 200, readscope.get());
+      return;
+    }
+    if (req.method === 'PUT') {
+      try {
+        const r = readscope.save(JSON.parse((await readBody(req)) || '{}'));
+        if (r.error) sendJson(res, 400, { error: r.error });
+        else {
+          console.log(new Date().toISOString(), '文件读取权限已修改为', JSON.stringify(r.config));
+          sendJson(res, 200, readscope.get());
+        }
+      } catch (e) {
+        sendJson(res, 400, { error: '无效的请求体: ' + e.message });
+      }
+      return;
+    }
+    sendJson(res, 405, { error: 'method not allowed' });
     return;
   }
 

@@ -40,6 +40,12 @@ const els = {
   quoteLabel: document.getElementById('quoteLabel'),
   quoteText: document.getElementById('quoteText'),
   quoteClear: document.getElementById('quoteClear'),
+  attachBar: document.getElementById('attachBar'),
+  composerNote: document.getElementById('composerNote'),
+  attachBtn: document.getElementById('attachBtn'),
+  shotBtn: document.getElementById('shotBtn'),
+  fileInput: document.getElementById('fileInput'),
+  imgViewer: document.getElementById('imgViewer'),
 };
 
 let settings = { endpoint: DEFAULT_ENDPOINT, model: '', agent: '', autoStart: true };
@@ -86,6 +92,7 @@ async function loadSettings() {
 
 // ---------- 健康检查 + 自动启动后端 ----------
 let backendOnline = false;
+let backendFeatures = null; // /health 返回的功能列表；旧版后端没有 'image'，会默默丢掉图片
 let startingBackend = null; // 正在进行的启动 Promise（防止重复启动）
 let lastAutoStartAt = 0; // 上次自动启动时间，避免反复拉起
 const AUTO_START_COOLDOWN = 30 * 1000;
@@ -127,6 +134,7 @@ async function checkHealth(allowAutoStart = true) {
   const j = await pingHealth();
   if (j) {
     backendOnline = true;
+    backendFeatures = Array.isArray(j.features) ? j.features : [];
     setStatus('ok', '在线', '后端在线: ' + (j.kiroBin || '') + '（点击重新检测）');
     setBackendBar(false);
     loadModels();
@@ -414,6 +422,7 @@ function addMessage(role, text = '', steps = null, meta = null, opts = {}) {
   wrap.className = 'msg ' + role;
   wrap.dataset.id = opts.id || newMsgId();
   if (opts.quote) wrap._quote = opts.quote;
+  if (opts.images && opts.images.length) wrap._images = opts.images;
   const roleEl = document.createElement('div');
   roleEl.className = 'role';
   const roleName = document.createElement('span');
@@ -457,6 +466,26 @@ function addMessage(role, text = '', steps = null, meta = null, opts = {}) {
       q.addEventListener('click', () => jumpToAnchor(opts.quote.msgId, wrap.dataset.id));
     }
     wrap.appendChild(q);
+  }
+  if (role === 'user' && wrap._images) {
+    const box = document.createElement('div');
+    box.className = 'msg-images';
+    wrap._images.forEach((im, i) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'msg-img';
+      b.title = '查看大图';
+      const img = document.createElement('img');
+      img.src = im.thumb;
+      img.alt = '图片 ' + (i + 1);
+      b.appendChild(img);
+      b.addEventListener('click', () => {
+        const orig = origImages.get(wrap.dataset.id);
+        openImageViewer(orig && orig[i] ? orig[i].url : im.thumb);
+      });
+      box.appendChild(b);
+    });
+    wrap.appendChild(box);
   }
   wrap.appendChild(body);
   els.messages.appendChild(wrap);
@@ -757,6 +786,8 @@ function setBusy(busy) {
   els.quickActions
     .querySelectorAll('button')
     .forEach((b) => (b.disabled = busy));
+  els.attachBtn.disabled = busy;
+  els.shotBtn.disabled = busy;
 }
 
 // ---------- 当前页面抓取 ----------
@@ -925,8 +956,12 @@ function pagePayload(c) {
  * 返回一个 Promise，在该轮结束后 resolve。
  * options.silent: 该轮为内部「喂数据」轮，出错时不切换成错误气泡（交由上层处理）。
  */
-async function sendPrompt(prompt, answerEl, page) {
+async function sendPrompt(prompt, answerEl, page, images) {
+  if (images && images.length && backendFeatures && !backendFeatures.includes('image')) {
+    throw new Error('本地后端还是旧版本，不支持图片。请在 server 目录运行 ./stop.sh && ./start.sh 重启后端后再试。');
+  }
   const payload = { prompt };
+  if (images && images.length) payload.images = images.map((im) => ({ mimeType: im.mimeType, data: im.data }));
   if (page) payload.page = page; // 首次涉及该页面：带上页面全文
   if (settings.model) payload.model = settings.model;
   if (settings.agent) payload.agent = settings.agent;
@@ -978,13 +1013,17 @@ async function ensureFullPage() {
   return pageContext;
 }
 
-async function ask(question, quote = null) {
+async function ask(question, quote = null, images = null) {
   // 发送前确保已抓取页面（若开启上下文且尚未抓取）
   if (els.useContext.checked && !pageContext) {
     await capturePage();
   }
 
-  addMessage('user', question, null, null, { quote });
+  const userEl = addMessage('user', question, null, null, {
+    quote,
+    images: images && images.length ? images.map((im) => ({ thumb: im.thumb, w: im.w, h: im.h })) : null,
+  });
+  if (images && images.length) rememberOriginals(userEl.parentElement.dataset.id, images);
   refreshMap();
   // 实际发给 Kiro 的内容：追问时带上被引用的那段文字（界面上只显示用户的问题）
   const promptText = quote ? quotedPrompt(question, quote) : question;
@@ -1010,10 +1049,10 @@ async function ask(question, quote = null) {
   try {
     if (!needInject) {
       // 不注入页面：直接发问题（含关闭上下文、或已注入过本页）
-      await sendPrompt(promptText, answerEl);
+      await sendPrompt(promptText, answerEl, null, images);
     } else {
       // 首次涉及该页面：带上页面全文，后端决定内联还是存成文件按需读取
-      await sendPrompt(promptText, answerEl, pagePayload(c));
+      await sendPrompt(promptText, answerEl, pagePayload(c), images);
       injectedUrl = c.url;
     }
   } catch (e) {
@@ -1079,12 +1118,13 @@ function maybeAddAnswerActions(answerEl) {
     const isUser = prev && prev.classList.contains('user');
     const q = isUser ? prev.querySelector('.body').textContent : lastQuestion;
     const quote = isUser ? prev._quote || null : null;
+    const imgs = isUser ? imagesForResend(prev) : null;
     if (!q) return;
     // 删除这条助手回答，以及它前面对应的那条用户提问
     wrap.remove();
     if (isUser) prev.remove();
     // 在原位重新提问生成
-    ask(q, quote);
+    ask(q, quote, imgs);
   });
 
   bar.appendChild(copyBtn);
@@ -1193,13 +1233,17 @@ function handleSSEEvent(rawEvent, answerEl) {
 // ---------- 事件绑定 ----------
 els.composer.addEventListener('submit', (e) => {
   e.preventDefault();
-  const text = els.input.value.trim();
-  if (!text || currentController) return;
+  let text = els.input.value.trim();
+  if (currentController || preparingImages) return;
+  const images = pendingImages.slice();
+  if (!text && !images.length) return;
+  if (!text) text = images.length > 1 ? '请描述这些图片。' : '请描述这张图片。';
   els.input.value = '';
   autosize();
   const quote = pendingQuote;
   setQuote(null);
-  ask(text, quote);
+  clearPendingImages();
+  ask(text, quote, images);
 });
 
 // 输入法（IME）组词状态：组词期间的回车只是确认候选词，不应触发发送
@@ -1242,6 +1286,7 @@ function startNewConversation() {
   lastQuestion = null;
   convAgent = settings.agent || '';
   setQuote(null);
+  origImages.clear();
   showEmptyHint();
   refreshMap();
   saveConversation(); // 同步清空该标签页的持久化对话
@@ -1332,9 +1377,12 @@ els.agentSelect.addEventListener('change', () => {
 els.quickActions.querySelectorAll('button').forEach((btn) => {
   btn.addEventListener('click', () => {
     if (currentController) return;
+    if (preparingImages) return;
     const quote = pendingQuote;
+    const images = pendingImages.slice();
     setQuote(null);
-    ask(btn.dataset.q, quote);
+    clearPendingImages();
+    ask(btn.dataset.q, quote, images);
   });
 });
 
@@ -1576,6 +1624,7 @@ function serializeConversation() {
       role === 'assistant' ? body.dataset.raw || '' : body.textContent || '';
     const m = { role, text, id: wrap.dataset.id };
     if (wrap._quote) m.quote = wrap._quote;
+    if (wrap._images) m.images = wrap._images;
     if (body._act) {
       const steps = stepsForStorage(body);
       if (steps.length) m.steps = steps;
@@ -1594,7 +1643,7 @@ function renderConversation(state) {
     showEmptyHint();
   } else {
     for (const m of msgs) {
-      const body = addMessage(m.role, m.text, m.steps, m.meta, { id: m.id, quote: m.quote });
+      const body = addMessage(m.role, m.text, m.steps, m.meta, { id: m.id, quote: m.quote, images: m.images });
       // 为已完成的助手回答补上操作条
       if (m.role === 'assistant' && (m.text || '').trim()) {
         maybeAddAnswerActions(body);
@@ -1673,6 +1722,255 @@ async function switchToTab(tabId) {
   // 抓取新标签页的页面内容（供上下文使用）
   if (els.useContext.checked) capturePage();
 }
+
+// ---------- 图片：粘贴、拖放、选择文件、截取网页 ----------
+const MAX_IMAGES = 4; // 一次最多几张（与 server.js 一致）
+const MAX_EDGE = 2048; // 发给 Kiro 的图片长边上限
+const THUMB_EDGE = 320; // 保存在对话记录里的缩略图长边
+const MAX_SEND_BYTES = 4 << 20; // 单张压缩后的上限（与 server.js 一致）
+const ACCEPT_TYPES = ['image/png', 'image/jpeg', 'image/webp', 'image/gif'];
+
+let pendingImages = []; // [{ id, mimeType, data, url, thumb, w, h }]
+let preparingImages = 0; // 正在压缩的张数，压缩完才能发送
+const origImages = new Map(); // 消息 id → 原图（只在本页内存里，用于看大图和重新生成）
+
+function blobToDataUrl(blob) {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(r.result);
+    r.onerror = () => reject(r.error);
+    r.readAsDataURL(blob);
+  });
+}
+
+/** 把图片缩到长边 edge 以内，返回 Blob。transparentToWhite：转 JPEG 时透明处填白 */
+async function drawScaled(bitmap, edge, type, quality) {
+  const scale = Math.min(1, edge / Math.max(bitmap.width, bitmap.height));
+  const w = Math.max(1, Math.round(bitmap.width * scale));
+  const h = Math.max(1, Math.round(bitmap.height * scale));
+  const canvas = new OffscreenCanvas(w, h);
+  const ctx = canvas.getContext('2d');
+  if (type === 'image/jpeg') {
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(0, 0, w, h);
+  }
+  ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(bitmap, 0, 0, w, h);
+  return { blob: await canvas.convertToBlob({ type, quality }), w, h };
+}
+
+/**
+ * 压缩一张图：截图类（PNG）保持 PNG，文字更清楚；PNG 太大或照片（JPEG / WebP）转成 JPEG。
+ * GIF 只取第一帧。
+ */
+async function prepareImage(blob) {
+  const bitmap = await createImageBitmap(blob);
+  try {
+    let out;
+    if (blob.type === 'image/png' || blob.type === 'image/gif') {
+      out = await drawScaled(bitmap, MAX_EDGE, 'image/png');
+      if (out.blob.size > 1.5 * 1024 * 1024) out = await drawScaled(bitmap, MAX_EDGE, 'image/jpeg', 0.88);
+    } else {
+      out = await drawScaled(bitmap, MAX_EDGE, 'image/jpeg', 0.85);
+    }
+    if (out.blob.size > MAX_SEND_BYTES) out = await drawScaled(bitmap, 1600, 'image/jpeg', 0.8);
+    if (out.blob.size > MAX_SEND_BYTES) throw new Error('图片太大，压缩后仍超过 4MB');
+    const url = await blobToDataUrl(out.blob);
+    const thumb = await blobToDataUrl((await drawScaled(bitmap, THUMB_EDGE, 'image/jpeg', 0.8)).blob);
+    return { id: newMsgId(), mimeType: out.blob.type, data: url.slice(url.indexOf(',') + 1), url, thumb, w: out.w, h: out.h };
+  } finally {
+    bitmap.close();
+  }
+}
+
+/** 输入框上方的短提示（几秒后消失） */
+let noteTimer = 0;
+function showComposerNote(text) {
+  els.composerNote.textContent = text;
+  els.composerNote.classList.remove('hidden');
+  clearTimeout(noteTimer);
+  noteTimer = setTimeout(() => els.composerNote.classList.add('hidden'), 3500);
+}
+
+async function addImageBlobs(blobs) {
+  const list = blobs.filter((b) => b && ACCEPT_TYPES.includes(b.type));
+  if (!list.length) {
+    if (blobs.length) showComposerNote('只支持 PNG、JPEG、WebP、GIF 图片');
+    return;
+  }
+  const room = MAX_IMAGES - pendingImages.length - preparingImages;
+  if (room <= 0) {
+    showComposerNote('一次最多 ' + MAX_IMAGES + ' 张图片');
+    return;
+  }
+  if (list.length > room) showComposerNote('一次最多 ' + MAX_IMAGES + ' 张图片，多出的已忽略');
+  const take = list.slice(0, room);
+  preparingImages += take.length;
+  renderAttachBar();
+  for (const b of take) {
+    try {
+      pendingImages.push(await prepareImage(b));
+    } catch (e) {
+      showComposerNote('图片处理失败：' + (e.message || e));
+    } finally {
+      preparingImages--;
+      renderAttachBar();
+    }
+  }
+  els.input.focus();
+}
+
+function renderAttachBar() {
+  const bar = els.attachBar;
+  bar.innerHTML = '';
+  pendingImages.forEach((im) => {
+    const item = document.createElement('div');
+    item.className = 'attach-item';
+    const view = document.createElement('button');
+    view.type = 'button';
+    view.className = 'attach-thumb';
+    view.title = '查看大图';
+    const img = document.createElement('img');
+    img.src = im.thumb;
+    img.alt = '待发送的图片';
+    view.appendChild(img);
+    view.addEventListener('click', () => openImageViewer(im.url));
+    const del = document.createElement('button');
+    del.type = 'button';
+    del.className = 'attach-del';
+    del.title = '移除';
+    del.setAttribute('aria-label', '移除这张图片');
+    del.innerHTML =
+      '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 7l10 10M17 7L7 17" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>';
+    del.addEventListener('click', () => {
+      pendingImages = pendingImages.filter((x) => x !== im);
+      renderAttachBar();
+      els.input.focus();
+    });
+    item.append(view, del);
+    bar.appendChild(item);
+  });
+  for (let i = 0; i < preparingImages; i++) {
+    const ph = document.createElement('div');
+    ph.className = 'attach-item attach-loading';
+    ph.innerHTML = '<span class="live-spin" aria-hidden="true"></span>';
+    bar.appendChild(ph);
+  }
+  bar.classList.toggle('hidden', !pendingImages.length && !preparingImages);
+}
+
+function clearPendingImages() {
+  pendingImages = [];
+  renderAttachBar();
+}
+
+/** 发送后记下原图，看大图、重新生成时用 */
+function rememberOriginals(msgId, images) {
+  origImages.set(msgId, images.map((im) => ({ mimeType: im.mimeType, data: im.data, url: im.url })));
+}
+
+/** 重新生成时要重发的图片：本页内存里有原图就用原图，否则用对话记录里的缩略图 */
+function imagesForResend(userWrap) {
+  const thumbs = userWrap._images;
+  if (!thumbs || !thumbs.length) return null;
+  const orig = origImages.get(userWrap.dataset.id);
+  return thumbs.map((t, i) => {
+    if (orig && orig[i]) return { ...orig[i], thumb: t.thumb, w: t.w, h: t.h };
+    const url = t.thumb;
+    return { mimeType: 'image/jpeg', data: url.slice(url.indexOf(',') + 1), url, thumb: url, w: t.w, h: t.h };
+  });
+}
+
+// 粘贴：剪贴板里有图片就加进来；同时有文字时文字照常粘贴
+els.input.addEventListener('paste', (e) => {
+  const items = [...((e.clipboardData && e.clipboardData.items) || [])];
+  const files = items.filter((it) => it.kind === 'file' && it.type.startsWith('image/')).map((it) => it.getAsFile());
+  if (!files.length) return;
+  const hasText = items.some((it) => it.kind === 'string' && it.type === 'text/plain');
+  if (!hasText) e.preventDefault();
+  addImageBlobs(files);
+});
+
+// 拖放：本地图片文件，或从网页里拖过来的图片（只有地址，需要下载）
+function hasDraggedFiles(e) {
+  const types = [...((e.dataTransfer && e.dataTransfer.types) || [])];
+  return types.includes('Files') || types.includes('text/uri-list');
+}
+let dragDepth = 0;
+document.addEventListener('dragenter', (e) => {
+  if (!hasDraggedFiles(e)) return;
+  dragDepth++;
+  document.body.classList.add('dropping');
+});
+document.addEventListener('dragleave', () => {
+  dragDepth = Math.max(0, dragDepth - 1);
+  if (!dragDepth) document.body.classList.remove('dropping');
+});
+document.addEventListener('dragover', (e) => {
+  if (hasDraggedFiles(e)) e.preventDefault();
+});
+document.addEventListener('drop', async (e) => {
+  if (!hasDraggedFiles(e)) return;
+  e.preventDefault();
+  dragDepth = 0;
+  document.body.classList.remove('dropping');
+  if (currentController) return;
+  const files = [...(e.dataTransfer.files || [])];
+  if (files.length) {
+    addImageBlobs(files);
+    return;
+  }
+  const url = (e.dataTransfer.getData('text/uri-list') || '').split('\n').find((l) => /^https?:/i.test(l.trim()));
+  if (!url) return;
+  try {
+    const r = await fetch(url.trim());
+    const blob = await r.blob();
+    if (!blob.type.startsWith('image/')) throw new Error('拖进来的不是图片');
+    addImageBlobs([blob]);
+  } catch (err) {
+    showComposerNote('无法读取这张图片：' + (err.message || err));
+  }
+});
+
+els.attachBtn.addEventListener('click', () => els.fileInput.click());
+els.fileInput.addEventListener('change', () => {
+  addImageBlobs([...els.fileInput.files]);
+  els.fileInput.value = '';
+});
+
+// 截取当前网页可见区域。全屏页里源标签页不在前台，截不到，隐藏按钮
+if (FULL_MODE) els.shotBtn.classList.add('hidden');
+els.shotBtn.addEventListener('click', async () => {
+  try {
+    const tab = await getActiveTab();
+    if (!tab || isRestrictedUrl(tab.url)) {
+      showComposerNote('当前页面无法截图');
+      return;
+    }
+    const url = await chrome.tabs.captureVisibleTab(tab.windowId, { format: 'png' });
+    const blob = await (await fetch(url)).blob();
+    addImageBlobs([blob]);
+  } catch (e) {
+    showComposerNote('截图失败：' + (e.message || e));
+  }
+});
+
+// 大图查看：点任意位置或按 Esc 关闭
+function openImageViewer(src) {
+  const img = document.createElement('img');
+  img.src = src;
+  img.alt = '图片大图';
+  els.imgViewer.replaceChildren(img);
+  els.imgViewer.classList.remove('hidden');
+}
+function closeImageViewer() {
+  els.imgViewer.classList.add('hidden');
+  els.imgViewer.replaceChildren();
+}
+els.imgViewer.addEventListener('click', closeImageViewer);
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && !els.imgViewer.classList.contains('hidden')) closeImageViewer();
+});
 
 // ---------- 追问：选中回答里的文字后追问 ----------
 let msgSeq = 0;
@@ -1953,6 +2251,7 @@ function buildTurns() {
         id: wrap.dataset.id,
         q: wrap.querySelector('.body').textContent,
         quote: wrap._quote || null,
+        images: wrap._images ? wrap._images.length : 0,
         answerId: null,
         error: false,
         children: [],
@@ -2071,7 +2370,15 @@ function renderTurn(t) {
   }
   const qt = document.createElement('span');
   qt.className = 'tm-q';
-  qt.textContent = t.q;
+  if (t.images) {
+    const ic = document.createElement('span');
+    ic.className = 'tm-img';
+    ic.title = t.images + ' 张图片';
+    ic.innerHTML =
+      '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="3.5" y="5" width="17" height="14" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M4 17l4.5-4.5 3.5 3.5 3-3 5 5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+    qt.appendChild(ic);
+  }
+  qt.appendChild(document.createTextNode(t.q));
   node.appendChild(qt);
   if (collapsed) {
     const more = document.createElement('span');
