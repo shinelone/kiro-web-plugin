@@ -2265,3 +2265,17 @@ body.full .hist-panel {
   color: var(--danger);
   background: var(--danger-bg);
 }
+
+/* 缩略图被省掉时的占位（会话历史从后端取回前） */
+.msg-img-ph {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 96px;
+  height: 96px;
+  border: 1px dashed var(--border);
+  border-radius: 10px;
+  color: var(--text-faint);
+  font-size: 11px;
+  background: var(--bg-sunken);
+}

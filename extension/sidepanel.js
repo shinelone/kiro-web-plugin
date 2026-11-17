@@ -477,6 +477,14 @@ function addMessage(role, text = '', steps = null, meta = null, opts = {}) {
     const box = document.createElement('div');
     box.className = 'msg-images';
     wrap._images.forEach((im, i) => {
+      if (!im.thumb) {
+        // 缩略图被去掉了（session 省配额时）：显示占位，点开尝试从内存原图看大图
+        const ph = document.createElement('span');
+        ph.className = 'msg-img msg-img-ph';
+        ph.textContent = '图片';
+        box.appendChild(ph);
+        return;
+      }
       const b = document.createElement('button');
       b.type = 'button';
       b.className = 'msg-img';
@@ -1885,18 +1893,43 @@ function renderConversation(state) {
 /** 保存当前标签页的对话：写 session（实时同步 + 快速恢复）+ 持久化到后端历史 */
 async function saveConversation() {
   if (currentTabId == null) return;
+  const hasMsg = els.messages.querySelector('.msg');
+  if (hasMsg && !convId) convId = newConvId(); // 有内容才分配 id
+  const state = serializeConversation();
+  // 后端历史是权威记录，带完整图片缩略图。独立保存，不受 session 配额影响。
+  if (hasMsg && convId) persistHistory(convId, state);
+  // session 只用于侧边栏↔全屏实时同步和本次浏览器会话内按标签页快速恢复。
+  // 图片缩略图会撑爆 session 配额，这里存去掉缩略图的轻量版；缩略图从后端历史取。
+  const sessionState = stripThumbsIfLarge(state);
+  lastSyncedConv = JSON.stringify(sessionState);
   try {
-    const hasMsg = els.messages.querySelector('.msg');
-    if (hasMsg && !convId) convId = newConvId(); // 有内容才分配 id
-    const state = serializeConversation();
-    lastSyncedConv = JSON.stringify(state);
-    await chrome.storage.session.set({
-      [CONV_PREFIX + currentTabId]: state,
-    });
-    if (hasMsg && convId) persistHistory(convId, state);
+    await chrome.storage.session.set({ [CONV_PREFIX + currentTabId]: sessionState });
   } catch (e) {
-    /* storage.session 不可用时忽略 */
+    // 仍超配额（比如多个标签页的大对话累积）：退一步存完全去掉缩略图的版本
+    try {
+      await chrome.storage.session.set({ [CONV_PREFIX + currentTabId]: stripThumbs(state) });
+    } catch (e2) {
+      /* session 不可用：后端历史已存，忽略 */
+    }
   }
+}
+
+/** 去掉消息里的图片缩略图，只留尺寸（session 存储用，省配额）；带 convId 以便需要时回后端取 */
+function stripThumbs(state) {
+  const msgs = (state.msgs || []).map((m) => {
+    if (!m.images || !m.images.length) return m;
+    return { ...m, images: m.images.map((im) => ({ w: im.w, h: im.h, stripped: true })) };
+  });
+  return { ...state, msgs };
+}
+
+/** 对话里图片总量较大时才去缩略图，小对话保持原样（实时同步能直接显示图片） */
+function stripThumbsIfLarge(state) {
+  let thumbBytes = 0;
+  for (const m of state.msgs || []) {
+    for (const im of m.images || []) thumbBytes += (im.thumb || '').length;
+  }
+  return thumbBytes > 200000 ? stripThumbs(state) : state; // 约 200KB 以上就去掉
 }
 
 // ---------- 持久化对话历史（后端 ~/.ai/kiro/history） ----------
@@ -1938,15 +1971,32 @@ function onConversationChanged(newValue) {
   if (keepScroll) els.messages.scrollTop = top; // 用户在看历史时不跳到底部
 }
 
-/** 读取某标签页的对话（无则返回 null） */
+/** 读取某标签页的对话（无则返回 null）；缩略图被省掉时回后端历史取完整版 */
 async function loadConversation(tabId) {
   try {
     const key = CONV_PREFIX + tabId;
     const got = await chrome.storage.session.get(key);
-    return got[key] || null;
+    return await hydrateThumbs(got[key] || null);
   } catch (e) {
     return null;
   }
+}
+
+/** 若对话里的图片缩略图被省掉（stripped），从后端历史把完整记录取回来 */
+async function hydrateThumbs(state) {
+  if (!state || !state.convId) return state;
+  const stripped = (state.msgs || []).some((m) => (m.images || []).some((im) => im.stripped));
+  if (!stripped) return state;
+  try {
+    const r = await fetch(settings.endpoint + '/history/' + encodeURIComponent(state.convId));
+    if (r.ok) {
+      const full = await r.json();
+      if (full && Array.isArray(full.msgs)) return { ...full, convId: state.convId };
+    }
+  } catch (e) {
+    /* 后端离线：用去掉缩略图的版本，图片显示占位 */
+  }
+  return state;
 }
 
 /**
