@@ -30,6 +30,8 @@ const PKG_READONLY_SUB = {
   go: new Set(['version', 'env', 'list']),
 };
 const PKG = new Set(Object.keys(PKG_READONLY_SUB));
+// launchctl 的只读子命令：需确认；load/bootstrap/submit 等能装自启动任务的仍禁止
+const LAUNCHCTL_READONLY = new Set(['print', 'print-disabled', 'print-cache', 'list', 'blame', 'version', 'help', 'managerpid', 'manageruid', 'managername', 'hostinfo', 'error', 'variant', 'dumpstate']);
 // 带版本 / 帮助参数的解释器默认当只读（node -v、python --version）
 const VERSION_FLAGS = new Set(['-v', '--version', '-V', 'version', '--help', '-h', 'help']);
 
@@ -41,7 +43,7 @@ const BANNED_CMDS = new Set([
   'sudo', 'su', 'doas',
   'mkfs', 'fdisk', 'diskutil', 'newfs',
   'shutdown', 'reboot', 'halt', 'poweroff',
-  'launchctl', 'crontab', 'at',
+  'crontab', 'at', // launchctl 单独处理：只读子命令需确认，其它禁止
   'csrutil', 'spctl', 'kextload', 'kextunload',
   'passwd', 'dscl', 'sysadminctl', 'createhomedir',
   'osascript', 'automator', // AppleScript 可绕过沙箱与很多限制
@@ -54,8 +56,10 @@ const BANNED_PATTERNS = [
   { re: /\brm\s+(-[a-zA-Z]*\s+)*(-[a-zA-Z]*r[a-zA-Z]*f|-[a-zA-Z]*f[a-zA-Z]*r)\b/, why: '递归强制删除（rm -rf）风险太高' },
   { re: /\b(rm|rmdir)\b[^|;&]*\s(~|\/|\$HOME|\/Users\/[^/\s]+)(\s|$)/, why: '删除家目录或根目录' },
   { re: /\bdd\b[^|;&]*\bof=/, why: 'dd 写入设备风险太高' },
-  { re: /[>|]\s*\/dev\/(disk|rdisk|sd|null)?[a-z0-9]/i, why: '直接写磁盘设备' },
-  { re: /\b(curl|wget)\b[^|]*\|\s*(sudo\s+)?(sh|bash|zsh|python3?|node|ruby|perl)\b/, why: '把下载内容直接管道给解释器执行' },
+  // 排除 /dev/null、/dev/stdout 等伪设备，2>/dev/null 是常见写法
+  { re: /[>|]\s*\/dev\/(?!(null|zero|stdout|stderr|stdin|tty|fd\/\d+)\b)[a-z]/i, why: '直接写磁盘设备' },
+  // shell 解释器接管道一律禁止；python/node/ruby/perl 带 -c/-e 时代码写在命令里、下载内容只是数据，交给后面判成需确认
+  { re: /\b(curl|wget)\b[^|]*\|\s*(sudo\s+)?(sh|bash|zsh|(python3?|node|ruby|perl)\b(?!\s+-[ce]\s))\b/, why: '把下载内容直接管道给解释器执行' },
   { re: /\b(\.ssh|id_rsa|id_ed25519|\.aws\/credentials|\.gnupg|\.netrc|Keychains|login\.keychain)\b/i, why: '访问密钥、凭据或钥匙串' },
   { re: /\bdump-keychain\b|\bfind-(generic|internet)-password\b/, why: '读取钥匙串密码' },
   { re: /:\(\)\s*\{.*\}\s*;?\s*:/, why: 'fork 炸弹' },
@@ -109,8 +113,10 @@ function classify(command, opts = {}) {
   // find/xargs 带执行或删除动作不算只读
   const findMutates = /\bfind\b[^|;&]*\s(-delete|-exec|-execdir|-ok)\b/.test(cmd) || /\bxargs\b/.test(cmd);
 
-  const segs = splitSegments(cmd);
-  const hasRedirectWrite = /(^|[^0-9<>])>{1,2}(?![&])/.test(cmd.replace(/\u0000SUB\u0000/g, '')); // > 或 >>（排除 2>&1）
+  // 去掉无害的重定向（2>&1、>/dev/null、&>/dev/null），免得被当成写文件或被 & 切出假的命令段
+  const plain = cmd.replace(/&?\d*>{1,2}\s*\/dev\/null\b/g, ' ').replace(/\d*>&\d+/g, ' ');
+  const segs = splitSegments(plain);
+  const hasRedirectWrite = /(^|[^0-9<>])>{1,2}(?![&])/.test(plain.replace(/\u0000SUB\u0000/g, '')); // > 或 >>
   const hasSub = cmd.includes('$(') || /`/.test(cmd);
   let worst = 'auto';
   let why = '';
@@ -129,6 +135,12 @@ function classify(command, opts = {}) {
     if (!base) continue;
     if (BANNED_CMDS.has(base) && !extraAuto.has(base)) return { level: 'ban', why: base + ' 命令被禁止' };
     if (extraBan.has(base)) return { level: 'ban', why: base + ' 在你的黑名单里' };
+    if (base === 'launchctl' && !extraAuto.has(base)) {
+      const lsub = args.find((a) => !a.startsWith('-')) || '';
+      if (!LAUNCHCTL_READONLY.has(lsub)) return { level: 'ban', why: 'launchctl ' + (lsub || '') + ' 会改动系统服务，被禁止（print / list 等查询可用）' };
+      bump('confirm', 'launchctl 查询系统服务');
+      continue;
+    }
 
     // 联网判断
     const sub = args.find((a) => !a.startsWith('-')) || '';

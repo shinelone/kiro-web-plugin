@@ -106,7 +106,12 @@ const PERM_TIMEOUT_MS = 120 * 1000;
 async function approveCommand(sessionId, command, sess) {
   const cfg = shellconfig.get();
   if (sess) sess._lastDecision = 'confirm';
-  if (cfg.shellMode === 'off') return 'deny';
+  if (sess) sess._denyWhy = '';
+  const denyWith = (why) => {
+    if (sess) sess._denyWhy = why;
+    return 'deny';
+  };
+  if (cfg.shellMode === 'off') return denyWith('命令执行已在设置页关闭，请把要运行的命令告诉用户，让用户自己执行');
 
   const verdict = shellpolicy.classify(command, {
     readOnlyCmds: cfg.shellAllow,
@@ -115,7 +120,7 @@ async function approveCommand(sessionId, command, sess) {
   });
   if (verdict.level === 'ban') {
     shellconfig.log({ command, decision: 'ban', why: verdict.why });
-    return 'deny';
+    return denyWith('安全策略禁止：' + verdict.why + '。请换一种不触发该规则的写法完成同样的事；确实做不到就把命令告诉用户，让用户自己执行');
   }
   // 本会话里用户点过「总是允许」的同类命令
   const first = shellpolicy.firstWord(shellpolicy.splitSegments(command)[0] || command).base;
@@ -133,7 +138,7 @@ async function approveCommand(sessionId, command, sess) {
   }
   // 需要用户确认
   const approver = approvers.get(sessionId);
-  if (!approver) return 'deny'; // SSE 已断开，无人可问
+  if (!approver) return denyWith('无法向用户请求确认（连接已断开）'); // SSE 已断开，无人可问
   const reqId = 'perm' + ++permReqSeq;
   const decision = await approver.ask({ reqId, command, cwd: terminal.baseCwd, why: verdict.why, net: verdict.net, first });
   if (decision === 'always' && sess) {
@@ -141,7 +146,7 @@ async function approveCommand(sessionId, command, sess) {
     sess._allowCmds.add(first);
   }
   if (sess) sess._lastDecision = decision === 'always' ? 'always' : decision === 'allow' ? 'confirm' : 'deny';
-  return decision === 'deny' ? 'deny' : 'allow';
+  return decision === 'deny' ? denyWith('用户拒绝了这条命令，不要换个写法重试同一操作，先问用户怎么处理') : 'allow';
 }
 
 const acp = new AcpManager({

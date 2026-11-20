@@ -275,7 +275,8 @@ class AcpManager {
           decision = 'deny';
         }
         if (decision === 'deny') {
-          this._safeSend({ id: m.id, error: { code: -32000, message: '用户或策略拒绝了这条命令' } });
+          const why = (sess && sess._denyWhy) || '用户或策略拒绝了这条命令';
+          this._safeSend({ id: m.id, error: { code: -32000, message: why } });
           return;
         }
         const r = this.terminal.create(m.params, { pageTainted: sess && sess.pageTainted, decision: sess && sess._lastDecision });
